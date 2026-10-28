@@ -1,6 +1,6 @@
 [package]
 name = "quackblox"
-version = "0.3.0"
+version = "0.4.0"
 description = "Quackblox: several Roblox accounts open at once on one PC"
 authors = ["EnderexDev"]
 edition = "2024"
