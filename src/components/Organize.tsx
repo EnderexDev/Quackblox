@@ -1,6 +1,6 @@
 // Groups of accounts, one-click profiles and the schedule (organize.rs). The lists are saved whole
 // at each change; a slot's last run is the Rust side's to keep.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Game, Group, Lists, Profile, Slot } from "../api";
 import { useT } from "../i18n";
 import { toast } from "../toast";
@@ -12,6 +12,18 @@ export type Person = { key: string; name: string; avatar?: string };
 
 const newId = () => crypto.randomUUID();
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+/** False once the sheet closed: a save that answers after he closed it does not close the next one. */
+function useOpen() {
+  const open = useRef(true);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
+  return open;
+}
+
 const minuteOf = (v: string) => {
   const [h, m] = v.split(":").map(Number);
   return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
@@ -272,12 +284,13 @@ function GroupSheet(p: { group: Group | null; people: Person[]; onClose: () => v
   const t = useT();
   const [name, setName] = useState(p.group?.name ?? "");
   const [picked, setPicked] = useState<string[]>(p.group?.accounts ?? []);
+  const open = useOpen();
   const submit = async () => {
     if (!name.trim()) return toast(t.needName);
     // Card order, so the group opens in the order he sees. An account removed since is not kept.
     const accounts = p.people.map((x) => x.key).filter((k) => picked.includes(k));
     if (!accounts.length) return toast(t.pickOneAccount);
-    if (await p.onSave({ id: p.group?.id ?? newId(), name: name.trim(), accounts })) p.onClose();
+    if ((await p.onSave({ id: p.group?.id ?? newId(), name: name.trim(), accounts })) && open.current) p.onClose();
   };
   return (
     <Sheet title={p.group ? p.group.name : t.newGroup} onClose={p.onClose}>
@@ -312,13 +325,14 @@ function ProfileSheet(p: {
   const [eco, setEco] = useState<string[]>(p.profile?.eco ?? p.eco);
   const [grid, setGrid] = useState(p.profile?.grid ?? true);
   const [same, setSame] = useState(p.profile?.sameServer ?? p.sameServer);
+  const open = useOpen();
   const submit = async () => {
     if (!name.trim()) return toast(t.needName);
     if (!game) return toast(t.profileNeedsGame);
     const accounts = p.people.map((x) => x.key).filter((k) => picked.includes(k));
     if (!accounts.length) return toast(t.pickOneAccount);
     const saved = await p.onSave({ id: p.profile?.id ?? newId(), name: name.trim(), game, accounts, eco: eco.filter((k) => accounts.includes(k)), grid, sameServer: same });
-    if (saved) p.onClose();
+    if (saved && open.current) p.onClose();
   };
   return (
     <Sheet title={p.profile ? p.profile.name : t.newProfile} onClose={p.onClose}>

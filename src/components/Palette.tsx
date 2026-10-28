@@ -58,6 +58,8 @@ export function Palette({ commands, onClose }: { commands: Command[]; onClose: (
             spellCheck={false}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
+              // An Enter that ends a word being composed (an IME) is not a pick.
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "ArrowDown") {
                 e.preventDefault();
                 setAt(Math.min(shown.length - 1, at + 1));
