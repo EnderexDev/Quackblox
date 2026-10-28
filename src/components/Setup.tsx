@@ -1,13 +1,18 @@
-// Quackblox's installer window (setup.rs), adapted from Quackify's: the folder and the desktop
-// shortcut, then Instalar, then Abrir o Quackblox.
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+// Quackblox's installer and update window (setup.rs), adapted from Quackify's. Installing: the
+// folder and the desktop shortcut, then Instalar, then Abrir o Quackblox. Updating: it starts by
+// itself, shows the real download percentage, then installing (no number: silent NSIS reports
+// none), and closes when the installer opens the new Quackblox.
+import { useEffect, useRef, useState } from "react";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { CloseIcon, DuckIcon, FolderIcon } from "./icons";
 import { Toggle } from "./Toggle";
 
-type Info = { version: string; dir: string; installed: boolean };
+type Info = { mode: "install" | "update"; version: string; dir: string; installed: boolean };
+type Progress = { stage: "found"; version: string } | { stage: "downloading"; percent: number | null } | { stage: "installing" };
 type Stage =
   | { kind: "ready" }
+  | { kind: "checking" }
+  | { kind: "downloading"; percent: number | null }
   | { kind: "installing" }
   | { kind: "done" }
   | { kind: "error"; message: string }
@@ -20,17 +25,42 @@ export function Setup() {
   const [info, setInfo] = useState<Info | null>(null);
   const [dir, setDir] = useState("");
   const [desktop, setDesktop] = useState(true);
+  const [version, setVersion] = useState("");
   const [stage, setStage] = useState<Stage>({ kind: "ready" });
   const [picking, setPicking] = useState(false);
   /** The folder the install really went to: Abrir opens that one. */
   const [installedDir, setInstalledDir] = useState("");
+  const started = useRef(false);
 
   useEffect(() => {
     invoke<Info>("setup_info").then((i) => {
       setInfo(i);
       setDir(i.dir);
+      setInstalledDir(i.dir);
+      setVersion(i.version);
+      if (i.mode === "update") update();
     });
   }, []);
+
+  const update = async () => {
+    // StrictMode runs the first effect twice: one update only.
+    if (started.current) return;
+    started.current = true;
+    setStage({ kind: "checking" });
+    const progress = new Channel<Progress>();
+    progress.onmessage = (p) => {
+      if (p.stage === "found") setVersion(p.version);
+      else if (p.stage === "downloading") setStage({ kind: "downloading", percent: p.percent });
+      else setStage({ kind: "installing" });
+    };
+    try {
+      // On success the installer opens the new Quackblox and this window closes itself.
+      await invoke("setup_update", { progress });
+    } catch (e) {
+      started.current = false;
+      setStage({ kind: "error", message: String(e) });
+    }
+  };
 
   const install = async () => {
     if (picking) return;
@@ -61,26 +91,47 @@ export function Setup() {
   const open = () => invoke("setup_launch", { dir: installedDir }).catch((e) => setStage({ kind: "openError", message: String(e) }));
 
   if (!info) return <div className="setup" />;
-  const busy = stage.kind === "installing";
+  const updating = info.mode === "update";
+  const busy = stage.kind === "checking" || stage.kind === "downloading" || stage.kind === "installing";
+  const failed = stage.kind === "error" || stage.kind === "openError";
 
   const title =
-    stage.kind === "done" || stage.kind === "openError" ? "Quackblox instalado" : stage.kind === "error" ? "A instalação não foi" : "Quackblox";
+    stage.kind === "done" || stage.kind === "openError"
+      ? "Quackblox instalado"
+      : stage.kind === "error"
+        ? updating
+          ? "A atualização não foi"
+          : "A instalação não foi"
+        : updating
+          ? version
+            ? `Atualizando pro Quackblox ${version}`
+            : "Procurando a versão nova…"
+          : "Quackblox";
+
   const line =
-    stage.kind === "installing"
-      ? "Instalando…"
-      : stage.kind === "done"
-        ? "Várias contas, um pato só."
-        : stage.kind === "error" || stage.kind === "openError"
-          ? stage.message
-          : info.installed
-            ? `O Quackblox ${info.version} por cima do que já está nesta pasta. Tuas contas e configurações ficam.`
-            : "Várias contas do Roblox abertas ao mesmo tempo.";
+    stage.kind === "downloading"
+      ? stage.percent === null
+        ? "Baixando…"
+        : `Baixando… ${stage.percent}%`
+      : stage.kind === "installing"
+        ? updating
+          ? "Instalando. O Quackblox abre de novo sozinho."
+          : "Instalando…"
+        : stage.kind === "done"
+          ? "Várias contas, um pato só."
+          : failed
+            ? stage.message
+            : stage.kind === "checking"
+              ? "Perguntando pro GitHub…"
+              : info.installed
+                ? `O Quackblox ${version} por cima do que já está nesta pasta. Tuas contas e configurações ficam.`
+                : "Várias contas do Roblox abertas ao mesmo tempo.";
 
   return (
     <div className="setup">
       <header className="setup-bar" data-tauri-drag-region>
         <span className="setup-bar-title" data-tauri-drag-region>
-          Instalar o Quackblox
+          {updating ? "Atualização do Quackblox" : "Instalar o Quackblox"}
         </span>
         {!busy && (
           <button className="setup-close" aria-label="Fechar" onClick={close}>
@@ -94,16 +145,16 @@ export function Setup() {
           <DuckIcon size={busy ? 52 : 76} />
         </div>
         <h1>{title}</h1>
-        <p className={`setup-line ${stage.kind === "error" || stage.kind === "openError" ? "error" : "muted"}`}>{line}</p>
+        <p className={`setup-line ${failed ? "error" : "muted"}`}>{line}</p>
 
         {busy && (
-          <div className="setup-progress endless">
-            <i />
+          <div className={`setup-progress ${stage.kind === "downloading" && stage.percent !== null ? "" : "endless"}`}>
+            <i style={stage.kind === "downloading" && stage.percent !== null ? { width: `${stage.percent}%` } : undefined} />
           </div>
         )}
 
         {/* Also after a failed install: a folder it could not write to can be changed before trying again. */}
-        {(stage.kind === "ready" || stage.kind === "error") && (
+        {!updating && (stage.kind === "ready" || stage.kind === "error") && (
           <div className="setup-options">
             <div className="setup-option">
               <FolderIcon size={16} />
@@ -122,7 +173,7 @@ export function Setup() {
         )}
 
         <div className="setup-actions">
-          {stage.kind === "ready" && (
+          {stage.kind === "ready" && !updating && (
             <button className="primary" disabled={picking} onClick={install}>
               {info.installed ? "Atualizar" : "Instalar"}
             </button>
@@ -133,9 +184,16 @@ export function Setup() {
             </button>
           )}
           {stage.kind === "error" && (
-            <button className="primary" disabled={picking} onClick={install}>
-              Tentar de novo
-            </button>
+            <>
+              <button className="primary" disabled={picking} onClick={updating ? update : install}>
+                Tentar de novo
+              </button>
+              {updating && (
+                <button className="secondary" onClick={open}>
+                  Abrir o Quackblox
+                </button>
+              )}
+            </>
           )}
         </div>
       </main>

@@ -12,13 +12,15 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
-    // Quackblox-Setup.exe: the installer window instead of the app.
-    if let Some(payload) = setup::payload() {
-        return setup::run(context, payload);
+    // Quackblox-Setup.exe or the update window: the installer instead of the app.
+    if let Some(mode) = setup::mode() {
+        return setup::run(context, mode);
     }
+    setup::clean_up();
     tauri::Builder::default()
         // First: a second launch only brings this window back.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_window(app)))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             app.manage(accounts::Store::load(app.handle()));
             // Before the multi, which reads auto_close.
@@ -33,6 +35,7 @@ pub fn run() {
             multi::multi_close_now,
             settings::settings_get,
             settings::settings_set,
+            setup::update_in_window,
             accounts::accounts_list,
             accounts::accounts_add,
             accounts::accounts_remove,

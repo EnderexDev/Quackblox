@@ -36,6 +36,12 @@ fn set_start_with_windows(on: bool, by: &str) -> Result<(), String> {
     if on { l.enable() } else { l.disable() }.map_err(|e| e.to_string())
 }
 
+/// Quits for real (closing the window only hides it).
+pub fn quit(app: &AppHandle) {
+    QUITTING.store(true, Ordering::Relaxed);
+    app.exit(0);
+}
+
 pub fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -66,10 +72,7 @@ pub fn setup(app: &App) -> tauri::Result<()> {
                 // The window's switch follows, even while it is on screen.
                 let _ = app.emit("startup", now);
             }
-            "quit" => {
-                QUITTING.store(true, Ordering::Relaxed);
-                app.exit(0);
-            }
+            "quit" => self::quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

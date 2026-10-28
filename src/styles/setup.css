@@ -228,6 +228,19 @@
   transform: scale(1.03);
 }
 
+.secondary {
+  height: 48px;
+  padding: 0 28px;
+  border-radius: 24px;
+  font-weight: 700;
+  font-size: 15px;
+  border: 1px solid var(--muted);
+}
+
+.secondary:hover {
+  border-color: var(--text);
+}
+
 .pill-button {
   display: inline-flex;
   align-items: center;

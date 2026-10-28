@@ -13,7 +13,9 @@ import {
   TrashIcon,
   UsersIcon,
 } from "./components/icons";
+import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
+import { checkForUpdate, installUpdate, useUpdate } from "./update";
 import { notify, toast, Toasts } from "./toast";
 
 const RECENTS_KEY = "quackblox.recents";
@@ -307,11 +309,34 @@ export default function App() {
             />
             Fechar sozinho o Roblox que trava o multi
           </label>
-          <span className="muted small">Fechar a janela deixa o Quackblox na bandeja, com o multi ligado.</span>
+          <UpdateLink />
         </footer>
       </div>
       <Toasts />
     </>
+  );
+}
+
+/** The version, and the update: ask for one, or install the one found. */
+function UpdateLink() {
+  const u = useUpdate();
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion().then(setVersion);
+  }, []);
+  return (
+    <span className="muted small" title="Fechar a janela deixa o Quackblox na bandeja, com o multi ligado.">
+      Quackblox {version} ·{" "}
+      {u.kind === "available" || u.kind === "starting" ? (
+        <button className="update-link available" disabled={u.kind === "starting"} onClick={installUpdate}>
+          {u.kind === "starting" ? "Abrindo a atualização…" : `Atualizar pro ${u.version}`}
+        </button>
+      ) : (
+        <button className="update-link" disabled={u.kind === "checking"} onClick={() => checkForUpdate()}>
+          {u.kind === "checking" ? "Procurando…" : "Procurar atualização"}
+        </button>
+      )}
+    </span>
   );
 }
 

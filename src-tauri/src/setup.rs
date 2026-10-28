@@ -1,9 +1,14 @@
-// Quackblox's own installer window, adapted from Quackify's (its branch t3/quackify-self-update,
-// setup.rs), install only. The NSIS installer Tauri builds still does the installing (files,
-// registry, uninstaller, shortcuts), run silently under a window in Quackblox's look.
-// Quackblox-Setup.exe is quackblox.exe with the NSIS installer appended and a trailer saying how
-// long it is (scripts/build-setup.mjs): finding it in its own file, the exe opens the installer
-// window instead of the app.
+// Quackblox's own installer and update window, adapted from Quackify's (its branch
+// t3/quackify-self-update, setup.rs). The NSIS installer Tauri builds still does the installing
+// (files, registry, uninstaller, shortcuts), run silently under a window in Quackblox's look.
+// - Quackblox-Setup.exe is quackblox.exe with the NSIS installer appended and a trailer saying
+//   how long it is (scripts/build-setup.mjs): finding it in its own file, the exe opens the
+//   installer window instead of the app.
+// - An update: the app copies itself to the temp folder as Quackblox-Updater.exe, starts it with
+//   --quackblox-update and closes. The copy downloads the update (its signature checked against
+//   tauri.conf.json's key), runs NSIS with /UPDATE /R, and NSIS opens the new Quackblox. From
+//   the temp folder, because NSIS overwrites the install folder, and by another name, because
+//   NSIS closes every quackblox.exe before it starts.
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -11,6 +16,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const LABEL: &str = "setup";
@@ -19,15 +25,22 @@ const MAGIC: &[u8; 8] = b"QBSETUP1";
 const NAME: &str = "Quackblox";
 /// The NSIS script's binary (the crate's name).
 const BINARY: &str = "quackblox.exe";
+const UPDATE_ARG: &str = "--quackblox-update";
+const UPDATER_EXE: &str = "Quackblox-Updater.exe";
 
-/// Where the installer sits inside this exe.
-pub struct Payload {
-    offset: u64,
-    len: u64,
+pub enum Mode {
+    /// Quackblox-Setup.exe: the installer starts this many bytes from the end of the exe.
+    Install { offset: u64, len: u64 },
+    /// The temp copy, updating the Quackblox installed in `dir`.
+    Update { dir: PathBuf },
 }
 
-/// Some when this exe is Quackblox-Setup.exe, read before anything else starts.
-pub fn payload() -> Option<Payload> {
+/// What this start of the exe is for, read before anything else starts.
+pub fn mode() -> Option<Mode> {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == UPDATE_ARG) {
+        return args.get(i + 1).map(|dir| Mode::Update { dir: PathBuf::from(dir) });
+    }
     let exe = std::env::current_exe().ok()?;
     let mut file = File::open(exe).ok()?;
     let size = file.metadata().ok()?.len();
@@ -42,15 +55,16 @@ pub fn payload() -> Option<Payload> {
     }
     let len = u64::from_le_bytes(tail[..8].try_into().ok()?);
     // size >= 16 here, so the subtraction cannot wrap whatever the trailer claims.
-    (len > 0 && len <= size - 16).then(|| Payload { offset: size - 16 - len, len })
+    (len > 0 && len <= size - 16).then(|| Mode::Install { offset: size - 16 - len, len })
 }
 
 /// Runs the installer window in place of the app: no tray, multi or single instance.
-pub fn run(mut context: tauri::Context<tauri::Wry>, payload: Payload) {
+pub fn run(mut context: tauri::Context<tauri::Wry>, mode: Mode) {
     context.config_mut().app.windows.clear();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(payload)
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(mode)
         .setup(|app| {
             // Its own WebView2 data: the install may run while Quackblox is open.
             let data = std::env::temp_dir().join("Quackblox-Setup-WebView");
@@ -75,13 +89,24 @@ pub fn run(mut context: tauri::Context<tauri::Wry>, payload: Payload) {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![setup_info, setup_installed, setup_pick_folder, setup_install, setup_launch, setup_close])
+        .invoke_handler(tauri::generate_handler![
+            setup_info,
+            setup_installed,
+            setup_pick_folder,
+            setup_install,
+            setup_update,
+            setup_launch,
+            setup_close
+        ])
         .run(context)
         .expect("error while running the Quackblox installer");
 }
 
 #[derive(Serialize)]
 pub struct Info {
+    /// "install" or "update".
+    mode: &'static str,
+    /// The version this installer carries; "" for an update, which learns it from GitHub.
     version: String,
     /// Where it installs: the folder of an earlier install, or the NSIS default.
     dir: String,
@@ -91,8 +116,11 @@ pub struct Info {
 
 #[tauri::command]
 fn setup_info(app: AppHandle) -> Info {
-    let dir = default_dir();
-    Info { version: app.package_info().version.to_string(), installed: dir.join(BINARY).exists(), dir: dir.display().to_string() }
+    let (kind, version, dir) = match app.state::<Mode>().inner() {
+        Mode::Install { .. } => ("install", app.package_info().version.to_string(), default_dir()),
+        Mode::Update { dir } => ("update", String::new(), dir.clone()),
+    };
+    Info { mode: kind, version, installed: dir.join(BINARY).exists(), dir: dir.display().to_string() }
 }
 
 /// The folder of the last install (the key NSIS writes), or %LOCALAPPDATA%\Quackblox.
@@ -136,9 +164,9 @@ async fn setup_pick_folder(app: AppHandle) -> Option<String> {
 /// Installs from the installer inside this exe. `desktop`: keep the desktop shortcut NSIS makes.
 #[tauri::command]
 async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(), String> {
-    let (offset, len) = {
-        let p = app.state::<Payload>();
-        (p.offset, p.len)
+    let (offset, len) = match app.state::<Mode>().inner() {
+        Mode::Install { offset, len } => (*offset, *len),
+        Mode::Update { .. } => return Err("isto não é um instalador".into()),
     };
     let shortcut = desktop_shortcut();
     INSTALLING.store(true, Ordering::SeqCst);
@@ -146,7 +174,7 @@ async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(),
         // A name nobody can guess ahead, so no one holds the file open before it is written.
         let installer = std::env::temp_dir().join(format!("Quackblox-Install-{}.exe", uuid::Uuid::new_v4()));
         let bytes = extract(offset, len)?;
-        install_from(&installer, &bytes, Path::new(&dir))?;
+        install_from(&installer, &bytes, &[], Path::new(&dir))?;
         // Silent NSIS always makes the desktop shortcut (/NS would skip the Start menu's too).
         // Switched off, there is none afterwards, even one an earlier install made.
         if !desktop {
@@ -174,7 +202,7 @@ fn extract(offset: u64, len: u64) -> Result<Vec<u8>, String> {
 
 /// Writes `bytes` to `path` and runs them as NSIS, the file held so nothing can change or delete
 /// it in between: reopened sharing only reading (Windows still runs it), then checked against `bytes`.
-fn install_from(path: &Path, bytes: &[u8], dir: &Path) -> Result<(), String> {
+fn install_from(path: &Path, bytes: &[u8], flags: &[&str], dir: &Path) -> Result<(), String> {
     use std::io::Write;
     use std::os::windows::fs::OpenOptionsExt;
     // Created new (it fails on a file someone put there first) and shared for reading only while
@@ -200,19 +228,20 @@ fn install_from(path: &Path, bytes: &[u8], dir: &Path) -> Result<(), String> {
         if on_disk != bytes {
             return Err("o instalador mudou no disco antes de rodar".to_string());
         }
-        run_nsis(path, dir)
+        run_nsis(path, flags, dir)
     })();
     let _ = std::fs::remove_file(path);
     result
 }
 
 /// Runs NSIS silently into `dir` and waits for it.
-fn run_nsis(installer: &Path, dir: &Path) -> Result<(), String> {
+fn run_nsis(installer: &Path, flags: &[&str], dir: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     // /D= has to be the last argument and unquoted, spaces and all: NSIS reads the rest of the
     // line as the folder. raw_arg keeps Rust from quoting it.
     let status = Command::new(installer)
         .arg("/S")
+        .args(flags)
         .raw_arg(format!("/D={}", dir.display()))
         .status()
         .map_err(|e| format!("não consegui iniciar o instalador: {e}"))?;
@@ -247,4 +276,80 @@ fn setup_launch(app: AppHandle, dir: String) -> Result<(), String> {
 #[tauri::command]
 fn setup_close(app: AppHandle) {
     app.exit(0);
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "stage", rename_all = "lowercase")]
+pub enum Progress {
+    Found { version: String },
+    Downloading { percent: Option<u8> },
+    Installing,
+}
+
+/// The update window's whole job: the newest version from GitHub, downloaded and checked, then
+/// installed over the folder; NSIS opens the new Quackblox and this window closes.
+#[tauri::command]
+async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let dir = match app.state::<Mode>().inner() {
+        Mode::Update { dir } => dir.clone(),
+        Mode::Install { .. } => return Err("isto não é uma atualização".into()),
+    };
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("o Quackblox já está na versão mais nova")?;
+    let _ = progress.send(Progress::Found { version: update.version.clone() });
+    // Some(None): a download whose size the server did not give, shown without a number.
+    let (mut got, mut shown) = (0u64, None::<Option<u8>>);
+    let bytes = update
+        .download(
+            |chunk, total| {
+                got += chunk as u64;
+                let percent = total.filter(|t| *t > 0).map(|t| (got * 100 / t).min(100) as u8);
+                // Only when the number shown moves: thousands of chunks.
+                if shown != Some(percent) {
+                    shown = Some(percent);
+                    let _ = progress.send(Progress::Downloading { percent });
+                }
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = progress.send(Progress::Installing);
+    INSTALLING.store(true, Ordering::SeqCst);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let installer = std::env::temp_dir().join(format!("Quackblox-Update-{}.exe", uuid::Uuid::new_v4()));
+        install_from(&installer, &bytes, &["/UPDATE", "/R"], &dir)
+    })
+    .await;
+    INSTALLING.store(false, Ordering::SeqCst);
+    result.map_err(|e| e.to_string())??;
+    app.exit(0);
+    Ok(())
+}
+
+/// From the app: hands the update to a copy of this exe in the temp folder and quits.
+#[tauri::command]
+pub fn update_in_window(app: AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("sem pasta de instalação")?.to_path_buf();
+    let copy = std::env::temp_dir().join(UPDATER_EXE);
+    std::fs::copy(&exe, &copy).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
+    Command::new(&copy)
+        .arg(UPDATE_ARG)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| format!("não consegui iniciar a atualização: {e}"))?;
+    crate::desktop::quit(&app);
+    Ok(())
+}
+
+/// The updater copy a past update left in the temp folder (it cannot delete its own file).
+pub fn clean_up() {
+    let _ = std::fs::remove_file(std::env::temp_dir().join(UPDATER_EXE));
 }
