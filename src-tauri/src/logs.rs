@@ -29,7 +29,7 @@ fn started(name: &str) -> Option<u64> {
 }
 
 /// The log of the client that started at this time (Unix seconds) as this account: the player
-/// log that started closest to it, within 5 s, whose join line names the account when it
+/// log that started closest to it, within a second, whose join line names the account when it
 /// has one. None when Roblox wrote no log for it (a client that ended at once writes none).
 pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
@@ -39,10 +39,11 @@ pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
             continue;
         }
         let Some(start) = started(&name) else { continue };
-        // The name's time has whole seconds, the process's does not. A client writes its log
-        // 0.17 s after it starts (28/10/26): a log 5 s later is another launch's, even of the
-        // same account (one that wrote none must not take the next one's).
-        if start + 2 < created || start > created + 5 {
+        // Both times are cut to whole seconds. A client writes its log 0.17 s after it starts
+        // (28/10/26), so its log is in the same second or the next. Anything later is another
+        // launch's: the same account's next launch comes 4 s or more after (the Play button
+        // stays busy that long), so a client that wrote no log never takes the next one's.
+        if start + 1 < created || start > created + 1 {
             continue;
         }
         let gap = start.abs_diff(created);
