@@ -43,7 +43,8 @@ export function Palette({ commands, onClose }: { commands: Command[]; onClose: (
         aria-label={t.paletteTitle}
         // On the box, not the input: Tab may have moved the focus to a line.
         onKeyDown={(e) => {
-          if (e.key === "Escape") {
+          // An Escape that cancels a word being composed (an IME) leaves the palette open.
+          if (e.key === "Escape" && !e.nativeEvent.isComposing) {
             e.preventDefault();
             onClose();
           }

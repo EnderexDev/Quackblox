@@ -60,8 +60,24 @@ export function OrganizeBlock(p: {
     setConfirm(null);
     run();
   };
-  const save = (change: Partial<Lists>) => p.onSave({ ...p.lists, ...change });
-  const saveSlot = (slot: Slot) => save({ schedule: schedule.map((s) => (s.id === slot.id ? slot : s)) });
+  // Saves go one after another, each made on the lists as the one before left them: two quick
+  // clicks (two days of a slot) both count, instead of the second writing over the first.
+  const latest = useRef(p.lists);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    latest.current = p.lists;
+  }, [p.lists]);
+  const save = (change: (l: Lists) => Partial<Lists>) => {
+    const run = queue.current.then(async () => {
+      const next = { ...latest.current, ...change(latest.current) };
+      const ok = await p.onSave(next);
+      if (ok) latest.current = next;
+      return ok;
+    });
+    queue.current = run.catch(() => {});
+    return run;
+  };
+  const saveSlot = (id: string, f: (s: Slot) => Slot) => save((l) => ({ schedule: l.schedule.map((s) => (s.id === id ? f(s) : s)) }));
   // More than one account needs the multi on (launch.rs).
   const canRun = (keys: string[]) => !p.running && (keys.length < 2 || p.multi === true);
 
@@ -96,7 +112,7 @@ export function OrganizeBlock(p: {
             <button className="pill-btn ghost small" onClick={() => setGroup(g)}>
               {t.edit}
             </button>
-            <button className="round-btn small-btn" title={confirm === g.id ? t.removeConfirm : t.remove} aria-label={t.remove} onClick={removing(g.id, () => save({ groups: groups.filter((x) => x.id !== g.id) }))}>
+            <button className="round-btn small-btn" title={confirm === g.id ? t.removeConfirm : t.remove} aria-label={t.remove} onClick={removing(g.id, () => save((l) => ({ groups: l.groups.filter((x) => x.id !== g.id) })))}>
               {confirm === g.id ? "?" : <TrashIcon size={14} />}
             </button>
           </div>
@@ -131,7 +147,7 @@ export function OrganizeBlock(p: {
               title={confirm === pr.id ? t.removeConfirm : t.remove}
               aria-label={t.remove}
               // A slot of a deleted profile goes with it: the schedule has nothing to open.
-              onClick={removing(pr.id, () => save({ profiles: profiles.filter((x) => x.id !== pr.id), schedule: schedule.filter((s) => s.profile !== pr.id) }))}
+              onClick={removing(pr.id, () => save((l) => ({ profiles: l.profiles.filter((x) => x.id !== pr.id), schedule: l.schedule.filter((s) => s.profile !== pr.id) })))}
             >
               {confirm === pr.id ? "?" : <TrashIcon size={14} />}
             </button>
@@ -146,7 +162,7 @@ export function OrganizeBlock(p: {
             className="pill-btn ghost small"
             disabled={profiles.length === 0}
             title={profiles.length ? undefined : t.slotNeedsProfile}
-            onClick={() => save({ schedule: [...schedule, { id: newId(), profile: profiles[0].id, minute: 9 * 60, days: [], on: false, last: "" }] })}
+            onClick={() => save((l) => ({ schedule: [...l.schedule, { id: newId(), profile: l.profiles[0].id, minute: 9 * 60, days: [], on: false, last: "" }] }))}
           >
             <PlusIcon size={14} /> {t.newSlot}
           </button>
@@ -163,7 +179,7 @@ export function OrganizeBlock(p: {
               value={hhmm(slot.minute)}
               onChange={(e) => {
                 const m = minuteOf(e.target.value);
-                if (m !== null) saveSlot({ ...slot, minute: m });
+                if (m !== null) saveSlot(slot.id, (s) => ({ ...s, minute: m }));
               }}
             />
             <div className="slot-days" role="group">
@@ -174,18 +190,24 @@ export function OrganizeBlock(p: {
                     key={d}
                     className={`day ${onDay || slot.days.length === 0 ? "on" : ""}`}
                     aria-pressed={onDay || slot.days.length === 0}
-                    onClick={() => {
-                      // From "every day", a click keeps only that day; the last one off is every day again.
-                      const days = slot.days.length === 0 ? [i] : onDay ? slot.days.filter((x) => x !== i) : [...slot.days, i].sort();
-                      saveSlot({ ...slot, days: days.length === 7 ? [] : days });
-                    }}
+                    onClick={() =>
+                      saveSlot(slot.id, (s) => {
+                        // From "every day", a click keeps only that day; the last one off is every day again.
+                        const was = s.days.includes(i);
+                        const days = s.days.length === 0 ? [i] : was ? s.days.filter((x) => x !== i) : [...s.days, i].sort();
+                        return { ...s, days: days.length === 7 ? [] : days };
+                      })
+                    }
                   >
                     {d}
                   </button>
                 );
               })}
             </div>
-            <select className="slot-profile" aria-label={t.slotProfile} value={slot.profile} onChange={(e) => saveSlot({ ...slot, profile: e.target.value })}>
+            <select className="slot-profile" aria-label={t.slotProfile} value={slot.profile} onChange={(e) => {
+                const id = e.target.value;
+                saveSlot(slot.id, (s) => ({ ...s, profile: id }));
+              }}>
               {profiles.map((pr) => (
                 <option key={pr.id} value={pr.id}>
                   {pr.name}
@@ -194,9 +216,9 @@ export function OrganizeBlock(p: {
             </select>
             <span className="muted small org-sub">{slot.last ? t.slotLast(slot.last.split("-").reverse().join("/")) : slot.days.length === 0 ? t.everyDay : ""}</span>
             <label className="footer-toggle" title={t.slotOn}>
-              <Toggle on={slot.on} onChange={(v) => saveSlot({ ...slot, on: v })} />
+              <Toggle on={slot.on} onChange={(v) => saveSlot(slot.id, (s) => ({ ...s, on: v }))} />
             </label>
-            <button className="round-btn small-btn" title={confirm === slot.id ? t.removeConfirm : t.remove} aria-label={t.remove} onClick={removing(slot.id, () => save({ schedule: schedule.filter((s) => s.id !== slot.id) }))}>
+            <button className="round-btn small-btn" title={confirm === slot.id ? t.removeConfirm : t.remove} aria-label={t.remove} onClick={removing(slot.id, () => save((l) => ({ schedule: l.schedule.filter((s) => s.id !== slot.id) })))}>
               {confirm === slot.id ? "?" : <TrashIcon size={14} />}
             </button>
           </div>
@@ -205,21 +227,24 @@ export function OrganizeBlock(p: {
 
       {group && (
         <GroupSheet
+          // A new key when another group is edited: the sheet starts from that group, not the last.
+          key={group === "new" ? "new" : group.id}
           group={group === "new" ? null : group}
           people={p.people}
           onClose={() => setGroup(null)}
-          onSave={(g) => save({ groups: group === "new" ? [...groups, g] : groups.map((x) => (x.id === g.id ? g : x)) })}
+          onSave={(g) => save((l) => ({ groups: l.groups.some((x) => x.id === g.id) ? l.groups.map((x) => (x.id === g.id ? g : x)) : [...l.groups, g] }))}
         />
       )}
       {profile && (
         <ProfileSheet
+          key={profile === "new" ? "new" : profile.id}
           profile={profile === "new" ? null : profile}
           people={p.people}
           game={p.game}
           eco={p.eco}
           sameServer={p.sameServer}
           onClose={() => setProfile(null)}
-          onSave={(pr) => save({ profiles: profile === "new" ? [...profiles, pr] : profiles.map((x) => (x.id === pr.id ? pr : x)) })}
+          onSave={(pr) => save((l) => ({ profiles: l.profiles.some((x) => x.id === pr.id) ? l.profiles.map((x) => (x.id === pr.id ? pr : x)) : [...l.profiles, pr] }))}
         />
       )}
     </section>
