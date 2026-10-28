@@ -895,3 +895,280 @@
   box-shadow: var(--shadow-popup);
   animation: none;
 }
+
+/* ---- Presence: the dot on each avatar and the line under the name ---- */
+
+.presence-dot {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 3px solid var(--bg);
+  background: var(--muted);
+}
+
+.presence-dot.site {
+  background: var(--blue);
+}
+
+.presence-dot.game {
+  background: var(--green);
+}
+
+.presence-dot.studio {
+  background: var(--accent-2);
+}
+
+.account-text .presence-text {
+  margin-top: 4px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.presence-text.site {
+  color: var(--blue);
+}
+
+.presence-text.game {
+  color: var(--green);
+}
+
+.presence-text.studio {
+  color: var(--accent-2);
+}
+
+/* The wait for room in a full server, in place of the Play button. */
+.pill-btn.waiting {
+  color: var(--accent-2);
+  font-size: 12.5px;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* "Mesmo servidor", beside "Jogar com todas". */
+.same-server {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  align-self: center;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.same-server + .pill-btn {
+  margin-left: 0;
+}
+
+/* ---- Servers of the game picked ---- */
+
+.game-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pill-btn.small.on {
+  background: var(--surface-3);
+}
+
+.servers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  animation: rise var(--t-mid) var(--ease-out);
+}
+
+.servers-head,
+.servers-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.servers-foot .pill-btn {
+  margin-left: auto;
+}
+
+.server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.server {
+  display: grid;
+  grid-template-columns: minmax(60px, 1fr) 54px 64px 60px auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px 5px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.server:hover,
+.server.on {
+  background: var(--surface-2);
+}
+
+.server-fill {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.server-fill span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+
+.server-count {
+  font-weight: 700;
+}
+
+.server-stat {
+  white-space: nowrap;
+}
+
+.job-paste {
+  display: flex;
+  gap: 8px;
+}
+
+.job-paste input,
+.error-lookup input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+/* ---- Friends of an account, in a sheet over the window ---- */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--scrim);
+  animation: rise var(--t-fast) var(--ease-out);
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(520px, 100%);
+  max-height: 80vh;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur-popup);
+  backdrop-filter: var(--blur-popup);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-popup);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sheet-head h3 {
+  margin-right: auto;
+  font-size: 17px;
+  font-weight: 750;
+}
+
+.friend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.friend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+}
+
+.friend:hover {
+  background: var(--surface-2);
+}
+
+.friend-face {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--surface-3);
+}
+
+.friend-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.friend-name {
+  font-weight: 700;
+}
+
+.friend-text .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Error code translator ---- */
+
+.error-lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.error-lookup input {
+  flex: 0 0 150px;
+}
+
+.error-lookup .small {
+  flex-basis: 100%;
+}
+
+/* The app's card has the tag and the menu: the tag takes the free space, the menu sits after it. */
+.tag + .menu-wrap {
+  margin-left: 0;
+}
+
+.tag {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -122,3 +122,25 @@ export const MinimizeIcon = (p: P) => (
     <path d="M8 19h12.5M20.5 9v10" />
   </Icon>
 );
+
+export const ServerIcon = (p: P) => (
+  <Icon {...p}>
+    <rect x="4" y="4" width="16" height="7" rx="2" />
+    <rect x="4" y="13" width="16" height="7" rx="2" />
+    <path d="M8 7.5h.01M8 16.5h.01" />
+  </Icon>
+);
+
+export const FollowIcon = (p: P) => (
+  <Icon {...p}>
+    <circle cx="9" cy="8.5" r="3.5" />
+    <path d="M2.5 19.5c.6-3.3 3.3-5.5 6.5-5.5 1.6 0 3 .5 4.2 1.4M15 17h6.5M18.5 14l3 3-3 3" />
+  </Icon>
+);
+
+export const LockIcon = (p: P) => (
+  <Icon {...p}>
+    <rect x="5" y="10.5" width="14" height="9.5" rx="2" />
+    <path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" />
+  </Icon>
+);

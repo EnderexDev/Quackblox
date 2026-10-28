@@ -11,6 +11,7 @@ mod app_account;
 mod clients;
 mod desktop;
 mod hotkeys;
+mod logs;
 mod multi;
 mod roblox;
 mod settings;
@@ -56,6 +57,11 @@ pub fn run() {
             accounts::avatars,
             accounts::game_info,
             accounts::play,
+            accounts::presence,
+            accounts::servers,
+            accounts::server_seat,
+            accounts::friends_in_game,
+            accounts::client_server,
             clients::clients_get,
             clients::clients_set_eco,
             clients::clients_focus,

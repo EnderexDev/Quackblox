@@ -120,6 +120,11 @@ struct Exited {
     code: u32,
     /// False when it ended before its window ever showed (a join that failed at the start).
     had_window: bool,
+    /// Why it left its last server, from its log (Enum.ConnectionError, 285 when he left).
+    reason: Option<u32>,
+    /// Creation time, for finding its log; not sent.
+    #[serde(skip)]
+    created: u64,
 }
 
 fn filetime(f: FILETIME) -> u64 {
@@ -138,6 +143,11 @@ fn exit_time(h: HANDLE) -> Option<u64> {
     let (mut c, mut e, mut k, mut u) = Default::default();
     unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) }.ok()?;
     Some(filetime(e))
+}
+
+/// A FILETIME as Unix seconds.
+fn unix(filetime: u64) -> u64 {
+    filetime.saturating_sub(UNIX_TO_FILETIME) / 10_000_000
 }
 
 /// Now as a FILETIME, the clock process creation times use.
@@ -361,6 +371,11 @@ impl Clients {
         ended
     }
 
+    /// When the account's newest client started, as Unix seconds.
+    pub fn newest_of(&self, account: &str) -> Option<u64> {
+        self.list.lock().unwrap().iter().filter(|c| c.account == account).map(|c| unix(c.created)).max()
+    }
+
     /// The main window of each client of the account, in launch order.
     fn windows_of(&self, account: &str) -> Vec<HWND> {
         self.list.lock().unwrap().iter().filter(|c| c.account == account).filter_map(|c| c.hwnd.map(hwnd)).collect()
@@ -426,7 +441,7 @@ pub fn start(app: &AppHandle) {
                         }
                         // The real end, not this look's: a pid reused in between must not count.
                         ended_at.push((c.pid, exit_time(h).unwrap_or_else(now_filetime)));
-                        exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window });
+                        exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window, reason: None, created: c.created });
                         return false;
                     }
                     if !c.hwnd.is_some_and(|w| unsafe { IsWindow(Some(hwnd(w))) }.as_bool()) {
@@ -470,8 +485,14 @@ pub fn start(app: &AppHandle) {
                     }
                 }
             }
-            for e in exited {
-                let _ = app.emit("client-exited", e);
+            // The log is read off this thread: a long session's log is megabytes.
+            for mut e in exited {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let user = crate::accounts::user_id(&e.account);
+                    e.reason = crate::logs::of(user, unix(e.created)).and_then(|p| crate::logs::reason_in(&p));
+                    let _ = app.emit("client-exited", e);
+                });
             }
             let _ = app.emit("clients", clients.snapshot(others(&clients)));
         }

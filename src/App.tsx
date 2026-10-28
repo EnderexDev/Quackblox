@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, on, type Account, type Client, type Clients, type Game, type User } from "./api";
+import { api, on, type Account, type Client, type Clients, type Friend, type Game, type Presence, type Server, type User } from "./api";
 import {
   ArrowUpIcon,
   CloseIcon,
+  FollowIcon,
   GridIcon,
   LeafIcon,
+  LockIcon,
   LoginIcon,
   MinimizeIcon,
   MoreIcon,
@@ -12,6 +14,7 @@ import {
   PlayIcon,
   PlusIcon,
   SearchIcon,
+  ServerIcon,
   TrashIcon,
   UsersIcon,
 } from "./components/icons";
@@ -21,13 +24,22 @@ import { Mascot } from "./components/Mascot";
 import { checkForUpdate, installUpdate, useUpdate } from "./update";
 import { notify, toast, Toasts } from "./toast";
 import { getLang, setLang, t as texts, useT, type Lang, type Texts } from "./i18n";
+import { errorNames } from "./errorCodes";
 
 const NO_CLIENTS: Clients = { clients: [], eco: [], others: 0 };
 
 const RECENTS_KEY = "quackblox.recents";
 const GAME_KEY = "quackblox.game";
+const SAME_SERVER_KEY = "quackblox.sameServer";
 /** Between two clients of "Jogar com todas", as the Account Manager does (2.5 s there). */
 const JOIN_GAP_MS = 3000;
+/** How often the accounts' presence is asked while the window shows (15 in a row passed, 28/10/26). */
+const PRESENCE_MS = 20000;
+/** How often a full server is looked at again while an account waits for room in it. */
+const SEAT_MS = 15000;
+/** How long "Mesmo servidor" waits for the first account to join a server. */
+const FIRST_SERVER_MS = 90000;
+const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const readJson = <T,>(key: string, fallback: T): T => {
   try {
@@ -37,9 +49,18 @@ const readJson = <T,>(key: string, fallback: T): T => {
   }
 };
 
-/** What `play` takes for a game: the id, or a link that also names the server. */
-const gameArg = (g: Game) => (g.jobId ? `https://www.roblox.com/games/start?placeId=${g.placeId}&gameInstanceId=${g.jobId}` : String(g.placeId));
-const sameGame = (a: Game, b: Game) => a.placeId === b.placeId && a.jobId === b.jobId;
+/** What `play` takes for a game: the id, or a link that also names the server or the private server. */
+const gameArg = (g: Game) =>
+  g.linkCode
+    ? `https://www.roblox.com/games/${g.placeId}?privateServerLinkCode=${g.linkCode}`
+    : g.jobId
+      ? `https://www.roblox.com/games/start?placeId=${g.placeId}&gameInstanceId=${g.jobId}`
+      : String(g.placeId);
+const sameGame = (a: Game, b: Game) => a.placeId === b.placeId && a.jobId === b.jobId && (a.linkCode ?? null) === (b.linkCode ?? null);
+/** One recent per game, and one per private server: a server picked inside a game replaces it. */
+const sameRecent = (a: Game, b: Game) => a.placeId === b.placeId && (a.linkCode ?? null) === (b.linkCode ?? null);
+/** What a Roblox error code means, or its official name when there is no text for it here. */
+const errorText = (code: number, t: Texts) => t.errors[code] ?? t.errorUnknown(code, errorNames[code]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** RAM as Task Manager rounds it: MB below 1 GB, GB with one decimal above. */
@@ -65,7 +86,10 @@ export default function App() {
   const [appError, setAppError] = useState<string | null>(null);
   const [avatars, setAvatars] = useState<Record<number, string>>({});
   const [game, setGame] = useState<Game | null>(() => readJson<Game | null>(GAME_KEY, null));
-  const [recents, setRecents] = useState<Game[]>(() => readJson<Game[]>(RECENTS_KEY, []));
+  // Lists saved before one recent per game kept every server picked: the newest of each stays.
+  const [recents, setRecents] = useState<Game[]>(() =>
+    readJson<Game[]>(RECENTS_KEY, []).filter((g, i, all) => all.findIndex((o) => sameRecent(o, g)) === i),
+  );
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [startup, setStartup] = useState(false);
   const [autoClose, setAutoClose] = useState(true);
@@ -73,6 +97,14 @@ export default function App() {
   const [hotkeys, setHotkeys] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [clients, setClients] = useState<Clients>(NO_CLIENTS);
+  const [presence, setPresence] = useState<Record<string, Presence>>({});
+  const [sameServer, setSameServer] = useState(() => localStorage.getItem(SAME_SERVER_KEY) === "1");
+  /** The accounts waiting for room in a full server, with how full it was at the last look. */
+  const [waiting, setWaiting] = useState<Record<string, { playing: number; max: number }>>({});
+  const [friendsOf, setFriendsOf] = useState<{ key: string; name: string } | null>(null);
+  // Read by the listeners set up once: the names as they are now.
+  const nameOf = useRef((key: string) => key);
+  nameOf.current = (key) => (key === "app" ? appUser?.displayName : accounts.find((a) => String(a.id) === key)?.displayName) ?? "Roblox";
 
   const loadAccounts = useCallback(() => api.accounts().then(setAccounts).catch(toast), []);
   const loadAppAccount = useCallback(
@@ -116,6 +148,11 @@ export default function App() {
       }),
       on.accountError(toast),
       on.clients(setClients),
+      // Why a client left, from its log. Leaving on purpose (285) needs no notice.
+      on.clientExited((e) => {
+        if (e.reason === null || e.reason === 285) return;
+        toast(texts().clientLeft(nameOf.current(e.account), errorText(e.reason, texts())));
+      }),
       on.hotkeysFailed((keys) => toast(texts().hotkeysFailed(keys))),
     ];
     // Read only once every listener is in, so nothing that happens in between is missed. A
@@ -151,12 +188,26 @@ export default function App() {
     api.avatars(ids).then((pairs) => pairs.length && setAvatars((m) => ({ ...m, ...Object.fromEntries(pairs) })));
   }, [accounts, appUser]);
 
+  // Where each account is, asked again while the window shows.
+  useEffect(() => {
+    const load = () => {
+      if (document.visibilityState === "visible") api.presence().then(setPresence).catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, PRESENCE_MS);
+    document.addEventListener("visibilitychange", load);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", load);
+    };
+  }, [accounts.length, appUser?.id]);
+
   const pickGame = (g: Game | null) => {
     setGame(g);
     localStorage.setItem(GAME_KEY, JSON.stringify(g));
     if (!g) return;
     setRecents((rs) => {
-      const next = [g, ...rs.filter((r) => !sameGame(r, g))].slice(0, 8);
+      const next = [g, ...rs.filter((r) => !sameRecent(r, g))].slice(0, 8);
       localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
       return next;
     });
@@ -164,7 +215,7 @@ export default function App() {
 
   const forgetRecent = (g: Game) =>
     setRecents((rs) => {
-      const next = rs.filter((r) => !sameGame(r, g));
+      const next = rs.filter((r) => !sameRecent(r, g));
       localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
       return next;
     });
@@ -173,20 +224,64 @@ export default function App() {
   const busyNow = useRef(new Set<string>());
   const [playingAll, setPlayingAll] = useState(false);
 
-  const play = async (key: string, label: string) => {
-    if (!game) return toast(t.pickGameFirst);
-    if (busyNow.current.has(key)) return;
+  // An account waiting for room is in here; taking it out stops the wait.
+  const waitingNow = useRef(new Set<string>());
+  const stopWaiting = (key: string) => {
+    waitingNow.current.delete(key);
+    setWaiting(({ [key]: _, ...rest }) => rest);
+  };
+
+  /** Holds the join while the picked server is full, looking again every 15 s. False when he
+   * stopped the wait. A server not in the list (it ended, or it is past the first pages) does not
+   * hold the join: Roblox has the last word on it. */
+  const waitForSeat = async (key: string, label: string, g: Game) => {
+    const clear = () => {
+      waitingNow.current.delete(key);
+      setWaiting(({ [key]: _, ...rest }) => rest);
+    };
+    for (let looked = 0; ; looked++) {
+      const seat = await api.serverSeat(g.placeId, g.jobId!).catch(() => null);
+      // A failed look while already waiting keeps waiting; before that, the join goes ahead.
+      if (seat ? !seat.found || seat.playing < seat.maxPlayers : looked === 0) {
+        if (looked) notify(texts().seatOpened(label));
+        clear();
+        return true;
+      }
+      if (looked === 0) waitingNow.current.add(key);
+      if (seat) setWaiting((w) => ({ ...w, [key]: { playing: seat.playing, max: seat.maxPlayers } }));
+      await sleep(SEAT_MS);
+      if (!waitingNow.current.has(key)) {
+        notify(texts().waitStopped(label), "info");
+        clear();
+        return false;
+      }
+    }
+  };
+
+  /** Opens a client of the account in the game picked, or in `target`. True when it opened. */
+  const play = async (key: string, label: string, target: Game | null = game) => {
+    if (!target) {
+      toast(t.pickGameFirst);
+      return false;
+    }
+    if (busyNow.current.has(key)) return false;
+    let launched = false;
     busyNow.current.add(key);
     setBusy((b) => new Set(b).add(key));
     try {
-      const r = await api.play(key, gameArg(game));
-      notify(r.multi ? t.openingGame(game.name, label) : t.openingWithoutMulti(label), r.multi ? "success" : "info");
+      if (target.jobId && !target.linkCode && !(await waitForSeat(key, label, target))) return false;
+      launched = true;
+      const r = await api.play(key, gameArg(target));
+      notify(r.multi ? texts().openingGame(target.name, label) : texts().openingWithoutMulti(label), r.multi ? "success" : "info");
       if (key !== "app") loadAccounts();
+      return true;
     } catch (e) {
       toast(`${label}: ${String(e)}`);
       if (key !== "app") loadAccounts();
+      return false;
     } finally {
-      // The client takes a few seconds to show; the button stays busy meanwhile.
+      // The client takes a few seconds to show; the button stays busy meanwhile. A wait for room
+      // that he stopped opened nothing, so the button comes back at once.
       setTimeout(() => {
         busyNow.current.delete(key);
         setBusy((b) => {
@@ -194,7 +289,7 @@ export default function App() {
           n.delete(key);
           return n;
         });
-      }, 4000);
+      }, launched ? 4000 : 0);
     }
   };
 
@@ -206,13 +301,40 @@ export default function App() {
       ...accounts.filter((a) => !a.expired && a.id !== appUser?.id).map((a) => [String(a.id), a.displayName] as [string, string]),
     ];
     try {
+      let target = game;
       for (const [i, [key, label]] of list.entries()) {
         if (i) await sleep(JOIN_GAP_MS);
-        await play(key, label);
+        const opened = await play(key, label, target);
+        // "Mesmo servidor" with no server picked: the others go where the first one landed.
+        if (i === 0 && opened && sameServer && target && !target.jobId && !target.linkCode && list.length > 1) {
+          notify(t.waitingFirstServer(label), "info");
+          const where = await firstServer(key);
+          if (where) {
+            target = { ...target, ...where };
+            notify(texts().sameServerFound);
+          } else notify(texts().sameServerTimeout, "info");
+        }
       }
     } finally {
       setPlayingAll(false);
     }
+  };
+
+  /** The server the account's new client joined: from its log, which says it as soon as it joins,
+   * or else from its presence. Null after 90 s. */
+  const firstServer = async (key: string) => {
+    for (let waited = 0; waited < FIRST_SERVER_MS; waited += 2000) {
+      await sleep(2000);
+      const s = await api.clientServer(key).catch(() => null);
+      if (s) return s;
+    }
+    const p = (await api.presence().catch(() => ({}) as Record<string, Presence>))[key];
+    return p?.jobId && p.placeId ? { placeId: p.placeId, jobId: p.jobId } : null;
+  };
+
+  const toggleSameServer = (on: boolean) => {
+    setSameServer(on);
+    localStorage.setItem(SAME_SERVER_KEY, on ? "1" : "0");
   };
 
   const remove = async (a: Account) => {
@@ -267,6 +389,9 @@ export default function App() {
   };
   /** `place`: the saved account's place, from 0, for its Ctrl+Shift number; none for the app's. */
   const live = (key: string, place?: number) => ({
+    presence: presence[key],
+    waiting: waiting[key],
+    onStopWait: () => stopWaiting(key),
     clients: clientsOf(key),
     eco: clients.eco.includes(key),
     onEco: () => toggleEco(key),
@@ -356,6 +481,10 @@ export default function App() {
             <div className="block-head">
               <h2>{t.accountsTitle}</h2>
               <span className="muted small">{t.accountsHint}</span>
+              <label className="same-server" title={t.sameServerTitle}>
+                <Toggle on={sameServer} onChange={toggleSameServer} />
+                {t.sameServer}
+              </label>
               <button className="pill-btn ghost" disabled={!game || playable < 2 || playingAll || multi !== true} onClick={playAll} title={t.playAllTitle}>
                 <UsersIcon size={16} /> {t.playAll}
               </button>
@@ -389,6 +518,7 @@ export default function App() {
                 canPlay={!!game && !!appUser}
                 onPlay={() => appUser && play("app", appUser.displayName)}
                 {...live("app")}
+                menu={appUser ? [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: "app", name: appUser.displayName }) }] : undefined}
               />
               {accounts.map((a, i) => (
                 <AccountCard
@@ -406,6 +536,7 @@ export default function App() {
                   dragging={dragId === a.id}
                   dragHandlers={dragHandlers(a)}
                   menu={[
+                    ...(a.expired ? [] : [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: String(a.id), name: a.displayName }) }]),
                     ...(i > 0 ? [{ icon: <ArrowUpIcon size={16} />, label: t.moveUp, run: () => moveUp(a, i) }] : []),
                     { icon: <TrashIcon size={16} />, label: t.removeAccount, run: () => remove(a), danger: true },
                   ]}
@@ -420,6 +551,8 @@ export default function App() {
               </button>
             </div>
           </section>
+
+          <ErrorLookup />
         </main>
 
         <footer className="footer">
@@ -442,6 +575,18 @@ export default function App() {
           <UpdateLink />
         </footer>
       </div>
+      {friendsOf && (
+        <FriendsSheet
+          account={friendsOf.key}
+          name={friendsOf.name}
+          onClose={() => setFriendsOf(null)}
+          onPick={(g, friend) => {
+            pickGame(g);
+            setFriendsOf(null);
+            notify(t.friendPicked(friend));
+          }}
+        />
+      )}
       <Toasts />
     </>
   );
@@ -508,6 +653,7 @@ function GamePicker({ game, recents, onPick, onForget }: { game: Game | null; re
   const t = useT();
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   // Bumped by every search and every pick: a search that answers after a newer one, or after a
   // recent was picked, is dropped.
@@ -542,12 +688,25 @@ function GamePicker({ game, recents, onPick, onForget }: { game: Game | null; re
           <GameIcon game={game} size={64} />
           <div className="game-chosen-text">
             <span className="game-name">{game.name}</span>
-            <span className="muted small">
+            <span className="muted small game-where">
               ID {game.placeId}
               {" · "}
-              {game.jobId ? t.serverChosen : t.anyServer}
+              {game.linkCode ? (
+                <>
+                  <LockIcon size={13} /> {t.privateServer}
+                </>
+              ) : game.jobId ? (
+                t.serverChosen
+              ) : (
+                t.anyServer
+              )}
             </span>
           </div>
+          {!game.linkCode && (
+            <button className={`pill-btn ghost small ${browsing ? "on" : ""}`} onClick={() => setBrowsing((b) => !b)} title={t.serversTitle} aria-expanded={browsing}>
+              <ServerIcon size={15} /> {t.servers}
+            </button>
+          )}
           <button className="round-btn" onClick={() => { onPick(null); setTimeout(() => input.current?.focus()); }} title={t.changeGame} aria-label={t.changeGame}>
             <CloseIcon size={16} />
           </button>
@@ -574,12 +733,13 @@ function GamePicker({ game, recents, onPick, onForget }: { game: Game | null; re
           </button>
         </form>
       )}
+      {game && browsing && !game.linkCode && <ServerBrowser game={game} onPick={onPick} />}
       {recents.length > 0 && (
         <div className="recents">
           <span className="muted small">{t.recents}</span>
           <div className="recent-row">
             {recents.map((r) => (
-              <div key={`${r.placeId}-${r.jobId}`} className={`recent ${game && sameGame(game, r) ? "on" : ""}`}>
+              <div key={`${r.placeId}-${r.jobId}-${r.linkCode}`} className={`recent ${game && sameGame(game, r) ? "on" : ""}`}>
                 <button className="recent-pick" onClick={() => pickRecent(r)} title={r.name}>
                   <GameIcon game={r} size={24} />
                   <span>{r.name}</span>
@@ -617,6 +777,10 @@ function AccountCard(p: {
   onPlay: () => void;
   onRelogin?: () => void;
   menu?: MenuItem[];
+  presence?: Presence;
+  /** Set while it waits for room in a full server. */
+  waiting?: { playing: number; max: number };
+  onStopWait: () => void;
   /** This account's open clients. */
   clients: Client[];
   eco: boolean;
@@ -648,6 +812,7 @@ function AccountCard(p: {
       <div className="account-top">
         <span className="avatar-wrap">
           {p.avatar ? <img className="avatar" src={p.avatar} alt="" draggable={false} /> : <span className="avatar empty" />}
+          {p.presence && <span className={`presence-dot ${p.presence.kind}`} title={presenceText(p.presence, t)} />}
           {p.hotkey && (
             <span className="hotkey-chip" title={t.hotkeyChip(p.hotkey)}>
               {p.hotkey}
@@ -677,12 +842,17 @@ function AccountCard(p: {
         <span className="account-name">{p.user?.displayName ?? t.robloxAccount}</span>
         {p.user && <span className="muted small">@{p.user.name}</span>}
         <span className={`small ${p.missing ? "warn" : "muted"}`}>{p.sub}</span>
+        {p.presence && p.presence.kind !== "offline" && <span className={`small presence-text ${p.presence.kind}`}>{presenceText(p.presence, t)}</span>}
       </div>
       {p.clients.length > 0 && <LiveLine clients={p.clients} onFocus={p.onFocus} />}
       <div className="card-actions">
         {p.onRelogin ? (
           <button className="pill-btn ghost wide" onClick={p.onRelogin}>
             <LoginIcon size={16} /> {t.signInAgain}
+          </button>
+        ) : p.waiting ? (
+          <button className="pill-btn ghost wide waiting" onClick={p.onStopWait} title={t.waitingSeatTitle}>
+            {t.waitingSeat(p.waiting.playing, p.waiting.max)}
           </button>
         ) : (
           <button className="pill-btn wide" disabled={!p.canPlay || p.busy} onClick={p.onPlay}>
@@ -716,5 +886,212 @@ function LiveLine({ clients, onFocus }: { clients: Client[]; onFocus: () => void
         </span>
       </span>
     </button>
+  );
+}
+
+function presenceText(p: Presence, t: Texts) {
+  if (p.kind === "game") return t.presenceGame(p.location);
+  if (p.kind === "site") return t.presenceSite;
+  if (p.kind === "studio") return t.presenceStudio(p.location === "Studio" ? "" : p.location);
+  return t.presenceOffline;
+}
+
+/** The game's public servers, to pick one, or the emptiest or fullest with room at once. Also
+ * takes a pasted JobId. */
+function ServerBrowser({ game, onPick }: { game: Game; onPick: (g: Game) => void }) {
+  const t = useT();
+  const [fullest, setFullest] = useState(false);
+  const [list, setList] = useState<Server[]>([]);
+  const [next, setNext] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [job, setJob] = useState("");
+  // A page that answers after the order changed is dropped.
+  const latest = useRef(0);
+
+  const load = async (cursor: string | null) => {
+    const mine = ++latest.current;
+    setLoading(true);
+    try {
+      const page = await api.servers(game.placeId, fullest, false, cursor);
+      if (mine !== latest.current) return;
+      setList((l) => (cursor ? [...l, ...page.servers] : page.servers));
+      setNext(page.next);
+    } catch (e) {
+      if (mine === latest.current) toast(e);
+    } finally {
+      if (mine === latest.current) setLoading(false);
+    }
+  };
+  useEffect(() => {
+    setList([]);
+    load(null);
+  }, [game.placeId, fullest]);
+
+  const choose = (jobId: string | null) => {
+    onPick({ ...game, jobId, linkCode: null });
+    if (jobId) notify(t.serverPicked);
+  };
+  const quick = (fullestFirst: boolean) =>
+    api
+      .servers(game.placeId, fullestFirst, true, null)
+      .then((p) => (p.servers[0] ? choose(p.servers[0].id) : notify(t.noRoom, "info")))
+      .catch(toast);
+
+  return (
+    <div className="servers">
+      <div className="servers-head">
+        <div className="lang-switch" role="group">
+          <button className={fullest ? "" : "on"} aria-pressed={!fullest} onClick={() => setFullest(false)}>
+            {t.emptiestFirst}
+          </button>
+          <button className={fullest ? "on" : ""} aria-pressed={fullest} onClick={() => setFullest(true)}>
+            {t.fullestFirst}
+          </button>
+        </div>
+        <button className="pill-btn ghost small" onClick={() => quick(false)}>
+          {t.pickEmptiest}
+        </button>
+        <button className="pill-btn ghost small" onClick={() => quick(true)}>
+          {t.pickFullest}
+        </button>
+        <button className="pill-btn ghost small" disabled={!game.jobId} onClick={() => choose(null)}>
+          {t.anyServerButton}
+        </button>
+      </div>
+      <div className="server-list">
+        {list.map((s) => {
+          const full = s.playing >= s.maxPlayers;
+          const on = game.jobId === s.id;
+          return (
+            <div key={s.id} className={`server ${on ? "on" : ""}`}>
+              <span className="server-fill" title={`${s.playing}/${s.maxPlayers}`}>
+                <span style={{ width: `${Math.min(100, (s.playing / Math.max(1, s.maxPlayers)) * 100)}%` }} />
+              </span>
+              <span className="server-count">
+                {s.playing}/{s.maxPlayers}
+              </span>
+              <span className="server-stat muted">{s.ping != null ? `${s.ping} ms` : "–"}</span>
+              <span className="server-stat muted">{s.fps != null ? `${Math.round(s.fps)} FPS` : "–"}</span>
+              <button className="pill-btn ghost small" disabled={on} onClick={() => choose(s.id)}>
+                {on ? t.chosen : full ? t.full : t.choose}
+              </button>
+            </div>
+          );
+        })}
+        {!loading && list.length === 0 && <span className="muted small">{t.noServers}</span>}
+      </div>
+      <div className="servers-foot">
+        <span className="muted small">{t.pingNote}</span>
+        {next && (
+          <button className="pill-btn ghost small" disabled={loading} onClick={() => load(next)}>
+            {loading ? t.loading : t.loadMore}
+          </button>
+        )}
+      </div>
+      <form
+        className="job-paste"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (JOB_ID.test(job.trim())) {
+            choose(job.trim().toLowerCase());
+            setJob("");
+          }
+        }}
+      >
+        <input value={job} placeholder={t.pasteJob} onChange={(e) => setJob(e.target.value)} spellCheck={false} />
+        <button className="pill-btn small" disabled={!JOB_ID.test(job.trim())}>
+          {t.use}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/** The friends of an account who are in a game now, to go to the server of one. */
+function FriendsSheet(p: { account: string; name: string; onClose: () => void; onPick: (g: Game, friend: string) => void }) {
+  const t = useT();
+  const [friends, setFriends] = useState<Friend[] | null>(null);
+  const [faces, setFaces] = useState<Record<number, string>>({});
+  const [going, setGoing] = useState<number | null>(null);
+  useEffect(() => {
+    api
+      .friendsInGame(p.account)
+      .then((list) => {
+        setFriends(list);
+        if (list.length) api.avatars(list.map((f) => f.id)).then((pairs) => setFaces(Object.fromEntries(pairs)));
+      })
+      .catch((e) => {
+        toast(e);
+        p.onClose();
+      });
+  }, [p.account]);
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && p.onClose();
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [p.onClose]);
+
+  const go = async (f: Friend) => {
+    setGoing(f.id);
+    try {
+      const g = await api.game(`https://www.roblox.com/games/start?placeId=${f.placeId}&gameInstanceId=${f.jobId}`);
+      p.onPick(g, f.displayName || f.name);
+    } catch (e) {
+      toast(e);
+    } finally {
+      setGoing(null);
+    }
+  };
+
+  return (
+    <div className="sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && p.onClose()}>
+      <div className="sheet" role="dialog" aria-label={t.friendsTitle(p.name)}>
+        <div className="sheet-head">
+          <h3>{t.friendsTitle(p.name)}</h3>
+          <button className="round-btn small-btn" onClick={p.onClose} aria-label={t.close}>
+            <CloseIcon size={16} />
+          </button>
+        </div>
+        {friends === null ? (
+          <span className="muted small">{t.loading}</span>
+        ) : friends.length === 0 ? (
+          <span className="muted small">{t.noFriendsInGame}</span>
+        ) : (
+          <div className="friend-list">
+            {friends.map((f) => (
+              <div key={f.id} className="friend">
+                {faces[f.id] ? <img className="friend-face" src={faces[f.id]} alt="" /> : <span className="friend-face" />}
+                <div className="friend-text">
+                  <span className="friend-name">{f.displayName || f.name}</span>
+                  <span className="muted small">
+                    {f.location}
+                    {!f.jobId && ` · ${t.serverHidden}`}
+                  </span>
+                </div>
+                <button className="pill-btn small" disabled={!f.jobId || going !== null} onClick={() => go(f)}>
+                  {going === f.id ? t.searching : t.goWith}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A Roblox error code typed or pasted, explained. */
+function ErrorLookup() {
+  const t = useT();
+  const [code, setCode] = useState("");
+  const n = Number(code.replace(/\D/g, ""));
+  return (
+    <section className="error-lookup">
+      <label className="muted small" htmlFor="error-code">
+        {t.errorLookup}
+      </label>
+      <input id="error-code" value={code} inputMode="numeric" placeholder={t.errorPlaceholder} onChange={(e) => setCode(e.target.value)} />
+      {n > 0 && <span className="small">{errorText(n, t)}</span>}
+    </section>
   );
 }

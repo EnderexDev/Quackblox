@@ -171,9 +171,134 @@ pub async fn avatars(ids: Vec<u64>) -> Vec<(u64, String)> {
     roblox::headshots(&ids).await
 }
 
+/// A game from what he pasted. A share link of a private server is read with a saved login (or
+/// the Roblox app's): Roblox opens those only for a logged in account.
 #[tauri::command]
-pub async fn game_info(input: String) -> Result<roblox::Game, String> {
-    roblox::game(&input).await
+pub async fn game_info(app: AppHandle, input: String) -> Result<roblox::Game, String> {
+    if roblox::bare_job(&input).is_some() {
+        return Err(tr!("isso é o JobId de um servidor: escolhe o jogo antes e cola ele de novo", "that's a server's JobId: pick the game first and paste it again"));
+    }
+    match roblox::share_code(&input) {
+        None => roblox::game(&input).await,
+        Some(code) => {
+            let code = code?;
+            let login = any_login(&app).ok_or_else(|| tr!("pra abrir link de servidor privado, adiciona uma conta antes", "to open a private server link, add an account first"))?;
+            roblox::game_of(roblox::resolve_share(&login, &code).await?).await
+        }
+    }
+}
+
+/// A login to ask Roblox things any account may ask: the first saved one that has not expired,
+/// or the Roblox app's.
+fn any_login(app: &AppHandle) -> Option<String> {
+    let store = app.state::<Store>();
+    let first = store.list.lock().unwrap().iter().find(|s| !s.expired).map(|s| s.id);
+    first.and_then(|id| store.login_of(id).ok()).or_else(|| app_account::cookie().ok())
+}
+
+/// The user id behind an account key ("app" or a saved account's id).
+pub fn user_id(account: &str) -> Option<u64> {
+    match account {
+        "app" => APP_USER.lock().unwrap().as_ref().map(|u| u.id),
+        id => id.parse().ok(),
+    }
+}
+
+/// An account's login and user id, by its key.
+fn login_and_id(app: &AppHandle, account: &str) -> Result<(String, u64), String> {
+    if account == "app" {
+        let id = user_id("app").ok_or_else(|| tr!("ainda lendo a conta do app do Roblox", "still reading the Roblox app's account"))?;
+        return Ok((app_account::cookie()?, id));
+    }
+    let id = account.parse::<u64>().map_err(|_| tr!("conta inválida", "invalid account"))?;
+    Ok((app.state::<Store>().login_of(id)?, id))
+}
+
+/// Where each account is now, by account key. One request with one login answers for all of
+/// them; an account in a game whose server that login may not see (not a friend of it) is asked
+/// again with its own login, which always sees its own server (measured 28/10/26).
+#[tauri::command]
+pub async fn presence(app: AppHandle) -> Result<std::collections::HashMap<String, roblox::Presence>, String> {
+    let store = app.state::<Store>();
+    let mut keys: Vec<(String, u64)> = store.list.lock().unwrap().iter().filter(|s| !s.expired).map(|s| (s.id.to_string(), s.id)).collect();
+    if let Some(id) = user_id("app") {
+        keys.push(("app".into(), id));
+    }
+    let Some(login) = any_login(&app) else { return Ok(Default::default()) };
+    let mut ids: Vec<u64> = keys.iter().map(|(_, id)| *id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut found = roblox::presence(&login, &ids).await?;
+    for p in found.iter_mut().filter(|p| p.kind == "game" && p.job_id.is_none()) {
+        let key = keys.iter().find(|(_, id)| *id == p.user_id).map(|(k, _)| k.clone()).unwrap_or_default();
+        let Ok((own, _)) = login_and_id(&app, &key) else { continue };
+        if let Ok(mine) = roblox::presence(&own, &[p.user_id]).await {
+            if let Some(m) = mine.into_iter().next() {
+                *p = m;
+            }
+        }
+    }
+    Ok(keys
+        .into_iter()
+        .filter_map(|(key, id)| Some((key, found.iter().find(|p| p.user_id == id)?.clone())))
+        .collect())
+}
+
+/// One page of a game's public servers.
+#[tauri::command]
+pub async fn servers(app: AppHandle, place_id: u64, fullest_first: bool, skip_full: bool, cursor: Option<String>) -> Result<roblox::ServerPage, String> {
+    roblox::servers(any_login(&app).as_deref(), place_id, fullest_first, skip_full, cursor.as_deref()).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Seat {
+    /// False when the server is not in the first pages (it ended, or the game has many servers).
+    found: bool,
+    playing: u32,
+    max_players: u32,
+}
+
+/// How full a server is, read from the game's server list, the fullest first: a full server is
+/// on the first page. Up to 3 pages.
+#[tauri::command]
+pub async fn server_seat(app: AppHandle, place_id: u64, job_id: String) -> Result<Seat, String> {
+    let login = any_login(&app);
+    let mut cursor: Option<String> = None;
+    for _ in 0..3 {
+        let page = roblox::servers(login.as_deref(), place_id, true, false, cursor.as_deref()).await?;
+        if let Some(s) = page.servers.iter().find(|s| s.id.eq_ignore_ascii_case(&job_id)) {
+            return Ok(Seat { found: true, playing: s.playing, max_players: s.max_players });
+        }
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    Ok(Seat { found: false, playing: 0, max_players: 0 })
+}
+
+/// The friends of an account who are in a game now.
+#[tauri::command]
+pub async fn friends_in_game(app: AppHandle, account: String) -> Result<Vec<roblox::Friend>, String> {
+    let (login, id) = login_and_id(&app, &account)?;
+    roblox::friends_in_game(&login, id).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Joined {
+    place_id: u64,
+    job_id: String,
+}
+
+/// The server the account's newest client joined, from its log; none until it has joined.
+#[tauri::command]
+pub fn client_server(app: AppHandle, account: String) -> Option<Joined> {
+    let created = app.state::<clients::Clients>().newest_of(&account)?;
+    let log = crate::logs::of(user_id(&account), created)?;
+    let (place_id, job_id) = crate::logs::server_in(&log)?;
+    Some(Joined { place_id, job_id })
 }
 
 const LOGIN_LABEL: &str = "login";
@@ -270,7 +395,12 @@ pub struct Played {
 /// account's user id) in the game the input names.
 #[tauri::command]
 pub async fn play(app: AppHandle, account: String, game: String) -> Result<Played, String> {
-    let (place_id, job_id) = roblox::parse_game(&game).ok_or_else(|| tr!("escolhe um jogo primeiro", "pick a game first"))?;
+    // Tests of the waits around a join, with no client opened. Dev builds only.
+    if cfg!(debug_assertions) && std::env::var_os("QUACKBLOX_NO_LAUNCH").is_some() {
+        eprintln!("accounts: play {account} blocked by QUACKBLOX_NO_LAUNCH");
+        return Err("QUACKBLOX_NO_LAUNCH".into());
+    }
+    let place = roblox::parse_game(&game).ok_or_else(|| tr!("escolhe um jogo primeiro", "pick a game first"))?;
     let saved_id = if account == "app" { None } else { Some(account.parse::<u64>().map_err(|_| tr!("conta inválida", "invalid account"))?) };
     let cookie = match saved_id {
         None => app_account::cookie()?,
@@ -309,7 +439,7 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
     // Off the async runtime: it waits up to 3 s on each tray player it ends.
     let handle = app.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || handle.state::<clients::Clients>().end_tray_players()).await;
-    let process = win::open_link(&roblox::launch_link(&ticket, place_id, job_id.as_deref()))?;
+    let process = win::open_link(&roblox::launch_link(&ticket, &place))?;
     let name = match saved_id {
         Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.display_name.clone()),
         None => APP_USER.lock().unwrap().as_ref().map(|u| u.display_name.clone()),
