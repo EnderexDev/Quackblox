@@ -1,0 +1,75 @@
+/* Design tokens of the redesign (spec "Redesign: visual, estrutura e movimento", Tokens).
+   Dark is the default; [data-theme="light"] on <html> swaps the colours. */
+
+:root {
+  color-scheme: dark;
+
+  /* Colours */
+  --bg: #0a0a0c;
+  --glass: rgba(14, 14, 18, 0.58);
+  --glass-strong: rgba(20, 20, 26, 0.86);
+  --surface-2: rgba(255, 255, 255, 0.08);
+  --surface-3: rgba(255, 255, 255, 0.14);
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #f6f4ee;
+  --muted: #9a978f;
+  --accent: #ffd84d;
+  --accent-2: #ffb800;
+  --on-accent: #1a1400;
+  --green: #29d39a;
+  --danger: #ff6b6b;
+  --scrim: rgba(0, 0, 0, 0.5);
+  --scrollbar: rgba(255, 255, 255, 0.18);
+  --scrollbar-hover: rgba(255, 255, 255, 0.3);
+
+  /* The colours of the cover playing, set by the aura; a neutral pair until one is read. */
+  --aura: #3a2a6e;
+  --aura-2: #8a4a2a;
+  --aura-opacity: 0.55;
+
+  /* Shape */
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 22px;
+  --r-pill: 999px;
+  --gap: 8px;
+  --blur: blur(24px) saturate(140%);
+  --blur-popup: blur(30px) saturate(140%);
+  --shadow-cover: 0 6px 18px rgba(0, 0, 0, 0.35);
+  --shadow-popup: 0 20px 50px rgba(0, 0, 0, 0.5);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 150ms;
+  --t-mid: 300ms;
+  --t-slow: 450ms;
+
+  /* Names from before the redesign, kept so every stylesheet reads the new values. */
+  --panel: var(--glass);
+  --panel-2: var(--surface-2);
+  --hover: var(--surface-3);
+  --popup: var(--glass-strong);
+  --radius: var(--r-md);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f6f4ee;
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-strong: rgba(255, 255, 255, 0.9);
+  --surface-2: rgba(0, 0, 0, 0.05);
+  --surface-3: rgba(0, 0, 0, 0.09);
+  --line: rgba(0, 0, 0, 0.08);
+  --text: #17150f;
+  /* 4.5 on glass over the darkest aura (it was #6b675e, 4.1). */
+  --muted: #625e55;
+  --accent: #f2b705;
+  --accent-2: #d99a00;
+  --scrim: rgba(20, 18, 12, 0.35);
+  --scrollbar: rgba(0, 0, 0, 0.2);
+  --scrollbar-hover: rgba(0, 0, 0, 0.32);
+  --aura-opacity: 0.35;
+  --shadow-popup: 0 20px 50px rgba(0, 0, 0, 0.18);
+}

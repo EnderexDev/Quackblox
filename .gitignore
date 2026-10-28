@@ -1,2 +1,9 @@
-build/*.exe
-build/*.txt
+node_modules
+dist
+*.log
+*.local
+tools/*.exe
+tools/*.txt
+.vscode/*
+tools/*.png
+tools/*.jpg

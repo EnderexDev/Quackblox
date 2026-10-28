@@ -1,0 +1,664 @@
+/* ---- The aura: Quackify's idle violet and amber, drifting behind the glass ---- */
+
+.aura {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg);
+}
+
+.aura-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: var(--aura-opacity);
+  will-change: transform;
+  animation: aura-drift 18s ease-in-out infinite alternate;
+}
+
+.aura-blob.a {
+  width: 55%;
+  height: 60%;
+  left: -4%;
+  top: -14%;
+  background: hsl(258 45% 30%);
+}
+
+.aura-blob.b {
+  width: 60%;
+  height: 65%;
+  right: -12%;
+  top: 22%;
+  background: hsl(24 55% 40%);
+  animation-duration: 22s;
+  animation-direction: alternate-reverse;
+}
+
+.aura-blob.c {
+  width: 40%;
+  height: 45%;
+  left: 26%;
+  bottom: -18%;
+  background: hsl(46 80% 40%);
+  opacity: calc(var(--aura-opacity) * 0.6);
+  animation-duration: 14s;
+}
+
+@keyframes aura-drift {
+  to {
+    transform: translate(4%, 3%) scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aura-blob {
+    animation: none;
+  }
+}
+
+/* ---- Shell ---- */
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: 60px minmax(0, 1fr) auto;
+  gap: var(--gap);
+  height: 100%;
+  padding: 0 var(--gap) var(--gap);
+}
+
+.panel {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 6px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 750;
+  font-size: 17px;
+  letter-spacing: -0.3px;
+  margin-right: auto;
+}
+
+.multi-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.pill-link {
+  margin-left: 4px;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.multi-pill .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 22%, transparent);
+}
+
+.multi-pill.wait .dot {
+  background: var(--accent-2);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-2) 22%, transparent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.page {
+  overflow-y: auto;
+  padding: 22px 26px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.block-head h2 {
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.4px;
+}
+
+.block-head .pill-btn {
+  margin-left: auto;
+  align-self: center;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 2px 10px 0;
+}
+
+.footer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.footer {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.footer .muted {
+  margin-left: auto;
+}
+
+/* ---- Buttons ---- */
+
+.round-btn {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  transition:
+    color var(--t-fast),
+    background var(--t-fast);
+}
+
+.round-btn:not(:disabled):hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.round-btn.small-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  transition:
+    transform var(--t-fast) var(--ease-out),
+    background var(--t-fast);
+}
+
+.pill-btn:not(:disabled):hover {
+  background: var(--accent-2);
+  transform: scale(1.03);
+}
+
+.pill-btn:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+.pill-btn.ghost {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.pill-btn.ghost:not(:disabled):hover {
+  background: var(--surface-3);
+}
+
+.pill-btn.wide {
+  width: 100%;
+}
+
+/* ---- Game picker ---- */
+
+.game-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.game-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 8px 0 18px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  transition: border-color var(--t-fast);
+}
+
+.game-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.game-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  user-select: text;
+}
+
+.game-search input::placeholder {
+  color: var(--muted);
+}
+
+.game-chosen {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px 12px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  animation: rise var(--t-mid) var(--ease-out);
+}
+
+.game-chosen-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-right: auto;
+  min-width: 0;
+}
+
+.game-name {
+  font-size: 17px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-icon {
+  flex: none;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--surface-3);
+  box-shadow: var(--shadow-cover);
+}
+
+.recents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recent-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recent {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  max-width: 260px;
+  transition:
+    background var(--t-fast),
+    border-color var(--t-fast);
+}
+
+.recent:hover {
+  background: var(--surface-3);
+}
+
+.recent.on {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.recent-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 4px;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.recent-pick .game-icon {
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+.recent-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-x {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 3px;
+  border-radius: 50%;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+
+.recent:hover .recent-x {
+  opacity: 1;
+}
+
+.recent-x:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+/* ---- Account cards ---- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  text-align: left;
+  animation: rise var(--t-mid) var(--ease-out);
+  transition:
+    background var(--t-fast),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.card:hover {
+  background: var(--surface-3);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.account-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  object-fit: cover;
+  flex: none;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.menu-wrap {
+  position: relative;
+  margin-left: auto;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: 34px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 6px;
+  border-radius: var(--r-md);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur-popup);
+  backdrop-filter: var(--blur-popup);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-popup);
+  animation: rise var(--t-fast) var(--ease-out);
+}
+
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--r-sm);
+  font-weight: 600;
+  text-align: left;
+}
+
+.menu button:hover {
+  background: var(--surface-3);
+}
+
+.menu button.danger {
+  color: var(--danger);
+}
+
+.account-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.account-name {
+  font-size: 16px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-text .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-text .small + .small {
+  margin-top: 6px;
+}
+
+.warn {
+  color: var(--accent-2);
+}
+
+.card.missing .avatar {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+
+.add-card {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: transparent;
+  border: 1.5px dashed var(--surface-3);
+  min-height: 210px;
+  color: var(--text);
+}
+
+.add-card:hover {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.add-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.add-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+/* ---- Toggle (Quackify's) ---- */
+
+.toggle {
+  flex: none;
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--surface-3);
+  transition: background 0.15s;
+}
+
+.toggle.on {
+  background: var(--accent);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+
+.toggle.on .toggle-knob {
+  transform: translateX(18px);
+  background: var(--on-accent);
+}
+
+/* ---- Toasts ---- */
+
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 54px;
+  z-index: 50;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 560px;
+  padding: 10px 16px 10px 10px;
+  border-radius: var(--r-pill);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur-popup);
+  backdrop-filter: var(--blur-popup);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-popup);
+  font-weight: 600;
+  pointer-events: auto;
+  cursor: pointer;
+  animation: rise var(--t-mid) var(--ease-out);
+}
+
+.toast-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 800;
+  background: var(--green);
+  color: #062a1d;
+}
+
+.toast.info .toast-icon {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.toast.error .toast-icon {
+  background: var(--danger);
+  color: #2a0606;
+}
