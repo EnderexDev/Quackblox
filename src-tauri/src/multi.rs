@@ -26,18 +26,26 @@ pub fn start(app: AppHandle) {
         // Passes that ended Roblox processes and still found the lock held: past 3, something
         // else holds it, and the automatic close stops instead of looping forever.
         let mut futile = 0;
+        let mut open_errors = 0;
         loop {
             let handle = unsafe { CreateMutexW(None, true, w!("ROBLOX_singletonMutex")) };
             // The lock could not even be opened: nothing says a Roblox holds it, so nothing is closed.
             if handle.is_err() {
-                // Three failures in a row: the window stops saying "Fechando..." and says it is stuck.
-                futile += 1;
-                if futile >= 3 && !STUCK.swap(true, Ordering::Relaxed) {
+                // Counted apart from the closing passes, so a passing error never turns the
+                // automatic close off. Three in a row: the window says it is stuck. A click on
+                // "Fechar agora" starts the count over.
+                open_errors += 1;
+                if CLOSE_NOW.swap(false, Ordering::Relaxed) {
+                    open_errors = 0;
+                    STUCK.store(false, Ordering::Relaxed);
+                }
+                if open_errors >= 3 && !STUCK.swap(true, Ordering::Relaxed) {
                     let _ = app.emit("multi-stuck", true);
                 }
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
             }
+            open_errors = 0;
             let taken = match handle {
                 // It already exists: a Roblox may own it, or only keep a handle to one whose
                 // owner is gone (a Roblox opened while an earlier Quackblox held it). A zero wait
