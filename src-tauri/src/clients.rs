@@ -447,19 +447,25 @@ impl Clients {
     /// Ends a client of Quackblox's (a dropped one, before it goes back in) and waits up to 3 s
     /// for it. Its end is marked as Quackblox's, and the tray player it may leave counts as one
     /// for the next launch to end.
+    /// Blocks up to 3 s: call it off the async runtime.
     pub fn end(&self, pid: u32) -> bool {
-        let h = {
+        // Ended and marked under the lock: the watcher never sees it end unmarked, and a
+        // terminate that failed leaves it unmarked, so its later drop or crash is still told.
+        // The wait goes on a handle of its own: the watcher closes the client's once it ends.
+        let own = {
             let mut list = self.list.lock().unwrap();
             let Some(c) = list.iter_mut().find(|c| c.pid == pid) else { return false };
+            if unsafe { TerminateProcess(c.proc.0, 0) }.is_err() {
+                return false;
+            }
             c.killed = true;
-            c.proc.0
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }.ok().map(Proc)
         };
-        // The handle stays open: only the watcher drops the client, once it sees the end.
-        if unsafe { TerminateProcess(h, 0) }.is_err() {
-            return false;
-        }
-        let _ = unsafe { WaitForSingleObject(h, 3000) };
-        self.gone.lock().unwrap().push((pid, exit_time(h).unwrap_or_else(now_filetime)));
+        let ended = own.as_ref().and_then(|p| {
+            let _ = unsafe { WaitForSingleObject(p.0, 3000) };
+            exit_time(p.0)
+        });
+        self.gone.lock().unwrap().push((pid, ended.unwrap_or_else(now_filetime)));
         true
     }
 

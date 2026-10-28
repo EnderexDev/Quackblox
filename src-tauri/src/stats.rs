@@ -88,6 +88,8 @@ pub fn stats_reset(app: AppHandle) -> Stats {
     let s = guard.get_or_insert_with(|| load(&app));
     s.stats = Stats { since: now(), users: HashMap::new() };
     s.rest.clear();
+    // The time before the reset is not counted after it.
+    s.last = Some(Instant::now());
     save(s);
     s.stats.clone()
 }

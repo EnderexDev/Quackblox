@@ -1260,10 +1260,16 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
     const timer = setInterval(load, 60000);
     return () => clearInterval(timer);
   }, []);
-  // Each game's name, asked once.
+  // The name of each game shown (the three most played of each account), asked once.
   useEffect(() => {
     if (!stats) return;
-    const places = [...new Set(Object.values(stats.users).flatMap((p) => Object.keys(p)))].filter((id) => !asked.current.has(id));
+    const shown = Object.values(stats.users).flatMap((p) =>
+      Object.entries(p)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([id]) => id),
+    );
+    const places = [...new Set(shown)].filter((id) => !asked.current.has(id));
     places.forEach((id) => {
       asked.current.add(id);
       api

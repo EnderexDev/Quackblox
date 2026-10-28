@@ -115,8 +115,7 @@ fn why(f: &Fall) -> String {
 }
 
 pub fn fell(app: &AppHandle, f: Fall) {
-    let clients = app.state::<Clients>();
-    let on = clients.rejoin_on(&f.account) || f.user.is_some_and(|u| clients.rejoin_on(&u.to_string()));
+    let on = on(app, &f);
     let key = tries_key(&f.account, f.user);
     let mut no_rejoin = None;
     let mut plan = None;
@@ -188,9 +187,16 @@ async fn rejoin(app: AppHandle, f: Fall, key: String, mut count: usize, run: u64
     }
 }
 
+/// Users that went back in under another card than the one with rejoin on (the Roblox app's
+/// card's account, opened again by its saved login), with that card's key: their next drop
+/// still follows that card's switch.
+static CAME_FROM: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+
+/// Whether rejoin is on for the client's card, its saved account, or the card it came back from.
 fn on(app: &AppHandle, f: &Fall) -> bool {
     let clients = app.state::<Clients>();
-    clients.rejoin_on(&f.account) || f.user.is_some_and(|u| clients.rejoin_on(&u.to_string()))
+    let from = f.user.and_then(|u| CAME_FROM.lock().unwrap().as_ref().and_then(|m| m.get(&u).cloned()));
+    clients.rejoin_on(&f.account) || f.user.is_some_and(|u| clients.rejoin_on(&u.to_string())) || from.is_some_and(|k| clients.rejoin_on(&k))
 }
 
 async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>) -> Result<(), String> {
@@ -213,8 +219,15 @@ async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>) -> Result<(), St
         },
         (key, _) => key.to_string(),
     };
+    if account != f.account {
+        if let Some(user) = f.user {
+            CAME_FROM.lock().unwrap().get_or_insert_with(HashMap::new).insert(user, f.account.clone());
+        }
+    }
     if let Some(p) = pid.take() {
-        app.state::<Clients>().end(p);
+        // Waits up to 3 s for the end: off the async runtime.
+        let handle = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end(p)).await;
     }
     let game = match f.kind {
         // A server that would not take it is not asked again: the next try goes to the game.
