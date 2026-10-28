@@ -100,7 +100,8 @@ export default function App() {
     Promise.all(offs).then(() =>
       api.multiStatus().then((s) => {
         if (!heard) setMulti(s.active);
-        setStuck(s.stuck);
+        // Only ever raises it: a "multi-stuck" heard meanwhile is never undone by an older read.
+        setStuck((was) => was || s.stuck);
         if (s.closed > 0) notify("Fechei o Roblox que estava aberto pra ligar o multi", "info");
       }),
     );

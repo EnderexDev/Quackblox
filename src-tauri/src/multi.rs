@@ -30,6 +30,11 @@ pub fn start(app: AppHandle) {
             let handle = unsafe { CreateMutexW(None, true, w!("ROBLOX_singletonMutex")) };
             // The lock could not even be opened: nothing says a Roblox holds it, so nothing is closed.
             if handle.is_err() {
+                // Three failures in a row: the window stops saying "Fechando..." and says it is stuck.
+                futile += 1;
+                if futile >= 3 && !STUCK.swap(true, Ordering::Relaxed) {
+                    let _ = app.emit("multi-stuck", true);
+                }
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
             }
