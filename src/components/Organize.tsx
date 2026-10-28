@@ -161,7 +161,7 @@ export function OrganizeBlock(p: {
                   <button
                     key={d}
                     className={`day ${onDay || slot.days.length === 0 ? "on" : ""}`}
-                    aria-pressed={onDay}
+                    aria-pressed={onDay || slot.days.length === 0}
                     onClick={() => {
                       // From "every day", a click keeps only that day; the last one off is every day again.
                       const days = slot.days.length === 0 ? [i] : onDay ? slot.days.filter((x) => x !== i) : [...slot.days, i].sort();
@@ -274,9 +274,9 @@ function GroupSheet(p: { group: Group | null; people: Person[]; onClose: () => v
   const [picked, setPicked] = useState<string[]>(p.group?.accounts ?? []);
   const submit = async () => {
     if (!name.trim()) return toast(t.needName);
-    if (!picked.length) return toast(t.pickOneAccount);
-    // Card order, so the group opens in the order he sees.
+    // Card order, so the group opens in the order he sees. An account removed since is not kept.
     const accounts = p.people.map((x) => x.key).filter((k) => picked.includes(k));
+    if (!accounts.length) return toast(t.pickOneAccount);
     if (await p.onSave({ id: p.group?.id ?? newId(), name: name.trim(), accounts })) p.onClose();
   };
   return (
@@ -315,8 +315,8 @@ function ProfileSheet(p: {
   const submit = async () => {
     if (!name.trim()) return toast(t.needName);
     if (!game) return toast(t.profileNeedsGame);
-    if (!picked.length) return toast(t.pickOneAccount);
     const accounts = p.people.map((x) => x.key).filter((k) => picked.includes(k));
+    if (!accounts.length) return toast(t.pickOneAccount);
     const saved = await p.onSave({ id: p.profile?.id ?? newId(), name: name.trim(), game, accounts, eco: eco.filter((k) => accounts.includes(k)), grid, sameServer: same });
     if (saved) p.onClose();
   };

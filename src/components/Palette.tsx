@@ -18,13 +18,15 @@ function matches(c: Command, words: string[]) {
 export function Palette({ commands, onClose }: { commands: Command[]; onClose: () => void }) {
   const t = useT();
   const [text, setText] = useState("");
-  const [at, setAt] = useState(0);
+  const [pointed, setAt] = useState(0);
   const list = useRef<HTMLDivElement>(null);
   const shown = useMemo(() => {
     const words = plain(text).split(/\s+/).filter(Boolean);
     return commands.filter((c) => matches(c, words));
   }, [commands, text]);
   useEffect(() => setAt(0), [text]);
+  // The list is made again at each render of the window: one that shrank keeps a line picked.
+  const at = Math.max(0, Math.min(pointed, shown.length - 1));
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(`[data-at="${at}"]`)?.scrollIntoView({ block: "nearest" });
   }, [at]);
@@ -35,7 +37,18 @@ export function Palette({ commands, onClose }: { commands: Command[]; onClose: (
   };
   return (
     <div className="sheet-backdrop palette-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet palette" role="dialog" aria-label={t.paletteTitle}>
+      <div
+        className="sheet palette"
+        role="dialog"
+        aria-label={t.paletteTitle}
+        // On the box, not the input: Tab may have moved the focus to a line.
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+      >
         <div className="palette-search">
           <SearchIcon size={18} />
           <input
@@ -47,16 +60,13 @@ export function Palette({ commands, onClose }: { commands: Command[]; onClose: (
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setAt((i) => Math.min(shown.length - 1, i + 1));
+                setAt(Math.min(shown.length - 1, at + 1));
               } else if (e.key === "ArrowUp") {
                 e.preventDefault();
-                setAt((i) => Math.max(0, i - 1));
+                setAt(Math.max(0, at - 1));
               } else if (e.key === "Enter") {
                 e.preventDefault();
                 run(shown[at]);
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                onClose();
               }
             }}
           />
