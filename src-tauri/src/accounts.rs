@@ -300,7 +300,9 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
             return Err(e);
         }
     };
-    app.state::<clients::Clients>().end_tray_players();
+    // Off the async runtime: it waits up to 3 s on each tray player it ends.
+    let handle = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || handle.state::<clients::Clients>().end_tray_players()).await;
     let process = win::open_link(&roblox::launch_link(&ticket, place_id, job_id.as_deref()))?;
     let name = match saved_id {
         Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.display_name.clone()),

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, RECT, WAIT_OBJECT_0, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, HWND, LPARAM, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
@@ -138,12 +138,14 @@ fn now_filetime() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| (d.as_nanos() / 100) as u64).unwrap_or(0) + UNIX_TO_FILETIME
 }
 
-/// Whether a process with this pid runs (any process: a reused pid reads as running, which only
-/// ever spares a tray player).
+/// Whether a process with this pid may be running. Only "no such process" reads as gone: a
+/// process Quackblox may not open (access denied) counts as running, and so does a reused pid,
+/// which only ever spares a tray player.
 fn running(pid: u32) -> bool {
-    let Ok(h) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }) else { return false };
-    let proc = Proc(h);
-    exit_code(proc.0).is_none()
+    match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) } {
+        Ok(h) => exit_code(Proc(h).0).is_none(),
+        Err(e) => e.code() != ERROR_INVALID_PARAMETER.to_hresult(),
+    }
 }
 
 fn exit_code(h: HANDLE) -> Option<u32> {
@@ -621,5 +623,37 @@ fn frame(win: HWND) -> (i32, i32, i32, i32) {
         (visible.left - outer.left, visible.top - outer.top, outer.right - visible.right, outer.bottom - visible.bottom)
     } else {
         (0, 0, 0, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pid_of(exe: &str) -> Option<u32> {
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
+        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut more = unsafe { Process32FirstW(snap, &mut e) }.is_ok();
+        let mut found = None;
+        while more && found.is_none() {
+            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(exe) {
+                found = Some(e.th32ProcessID);
+            }
+            more = unsafe { Process32NextW(snap, &mut e) }.is_ok();
+        }
+        let _ = unsafe { CloseHandle(snap) };
+        found
+    }
+
+    #[test]
+    fn running_reads_only_a_missing_process_as_gone() {
+        assert!(running(std::process::id()));
+        // Pids are multiples of 4: this one never exists.
+        assert!(!running(0xFFFF_FFF1));
+        // csrss.exe denies even a limited query: it must still count as running.
+        let csrss = pid_of("csrss.exe").expect("csrss.exe runs on every Windows");
+        assert!(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, csrss) }.is_err());
+        assert!(running(csrss));
     }
 }
