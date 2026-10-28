@@ -191,7 +191,10 @@ export default function App() {
   // Where each account is, asked again while the window shows.
   useEffect(() => {
     const load = () => {
-      if (document.visibilityState === "visible") api.presence().then(setPresence).catch(() => {});
+      if (document.visibilityState !== "visible") return;
+      api.presence().then(setPresence).catch(() => {});
+      // The Roblox app's login turns into the last account that played: its card follows.
+      loadAppAccount();
     };
     load();
     const timer = setInterval(load, PRESENCE_MS);
@@ -296,9 +299,13 @@ export default function App() {
   const playAll = async () => {
     if (playingAll) return;
     setPlayingAll(true);
+    // Read now: each client opened writes its account as the Roblox app's login (seen 28/10/26),
+    // so the card may name the one before, and a saved account equal to the app's would open twice.
+    const app = await api.appAccount().catch(() => null);
+    if (app) setAppUser(app);
     const list: [string, string][] = [
-      ...(appUser ? [["app", appUser.displayName] as [string, string]] : []),
-      ...accounts.filter((a) => !a.expired && a.id !== appUser?.id).map((a) => [String(a.id), a.displayName] as [string, string]),
+      ...(app ? [["app", app.displayName] as [string, string]] : []),
+      ...accounts.filter((a) => !a.expired && a.id !== app?.id).map((a) => [String(a.id), a.displayName] as [string, string]),
     ];
     try {
       let target = game;
