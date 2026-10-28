@@ -48,3 +48,23 @@ pub fn open_link(url: &str) -> Result<Option<HANDLE>, String> {
     unsafe { ShellExecuteExW(&mut info) }.map_err(|e| tr!("o Windows não abriu o link ({e})", "Windows didn't open the link ({e})"))?;
     Ok((!info.hProcess.is_invalid()).then_some(info.hProcess))
 }
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// The PC's clock as he reads it (the schedule's), from Windows: the standard library has no time
+/// zone.
+pub struct LocalNow {
+    /// YYYY-MM-DD.
+    pub day: String,
+    /// 0 for Sunday.
+    pub weekday: u8,
+    /// Minutes after midnight.
+    pub minute: u32,
+}
+
+pub fn local_now() -> LocalNow {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    LocalNow { day: format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay), weekday: t.wDayOfWeek as u8, minute: t.wHour as u32 * 60 + t.wMinute as u32 }
+}

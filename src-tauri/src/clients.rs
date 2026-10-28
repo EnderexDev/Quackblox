@@ -528,6 +528,11 @@ impl Clients {
         self.list.lock().unwrap().iter().filter(|c| c.account == account).max_by_key(|c| c.created).map(|c| (unix(c.created), c.user))
     }
 
+    /// Whether a client of the account has its window on screen.
+    pub fn shown(&self, account: &str) -> bool {
+        self.list.lock().unwrap().iter().any(|c| c.account == account && c.hwnd.is_some())
+    }
+
     /// The main window of each client of the account, in launch order.
     fn windows_of(&self, account: &str) -> Vec<HWND> {
         self.list.lock().unwrap().iter().filter(|c| c.account == account).filter_map(|c| c.hwnd.map(hwnd)).collect()
@@ -867,7 +872,7 @@ pub async fn clients_grid(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || grid(&app)).await.map_err(|e| e.to_string())?
 }
 
-fn grid(app: &AppHandle) -> Result<usize, String> {
+pub fn grid(app: &AppHandle) -> Result<usize, String> {
     let windows = all_windows(app);
     if windows.is_empty() {
         return Err(tr!("nenhum Roblox aberto pra organizar", "no Roblox open to arrange"));

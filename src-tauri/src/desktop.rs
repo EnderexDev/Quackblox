@@ -118,6 +118,9 @@ pub fn setup(app: &App) -> tauri::Result<()> {
 
 /// Closing the main window hides it: the multi has to stay on.
 pub fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if window.label().starts_with(crate::site::LABEL) {
+        return crate::site::on_window_event(window, event);
+    }
     if window.label() != "main" {
         return;
     }

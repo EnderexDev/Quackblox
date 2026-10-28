@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, on, type Account, type Client, type ClientFell, type Clients, type Friend, type Game, type Presence, type Server, type Settings, type Stats, type User } from "./api";
+import { api, on, type Account, type Client, type ClientFell, type Clients, type Friend, type Game, type Group, type Lists, type Plan, type Presence, type Profile, type Server, type Settings, type Stats, type Summary, type User } from "./api";
 import {
   ArrowUpIcon,
   CloseIcon,
@@ -18,6 +18,8 @@ import {
   ServerIcon,
   TrashIcon,
   UsersIcon,
+  GlobeIcon,
+  CommandIcon,
 } from "./components/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
@@ -26,6 +28,8 @@ import { checkForUpdate, installUpdate, useUpdate } from "./update";
 import { notify, toast, Toasts } from "./toast";
 import { getLang, setLang, t as texts, useT, type Lang, type Texts } from "./i18n";
 import { errorNames } from "./errorCodes";
+import { OrganizeBlock, type Person } from "./components/Organize";
+import { Palette, type Command } from "./components/Palette";
 
 const NO_CLIENTS: Clients = { clients: [], eco: [], rejoin: [], others: 0 };
 type VigiaSettings = Pick<Settings, "alertWindows" | "alertDiscord" | "discordWebhook" | "loginCheck">;
@@ -39,14 +43,8 @@ const CHEER_MS = 4000;
 const RECENTS_KEY = "quackblox.recents";
 const GAME_KEY = "quackblox.game";
 const SAME_SERVER_KEY = "quackblox.sameServer";
-/** Between two clients of "Jogar com todas", as the Account Manager does (2.5 s there). */
-const JOIN_GAP_MS = 3000;
 /** How often the accounts' presence is asked while the window shows (15 in a row passed, 28/10/26). */
 const PRESENCE_MS = 20000;
-/** How often a full server is looked at again while an account waits for room in it. */
-const SEAT_MS = 15000;
-/** How long "Mesmo servidor" waits for the first account to join a server. */
-const FIRST_SERVER_MS = 90000;
 const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const readJson = <T,>(key: string, fallback: T): T => {
@@ -76,7 +74,6 @@ function fellText(e: ClientFell, t: Texts) {
   const next = e.rejoinIn !== null ? t.rejoinIn(e.rejoinIn) : e.noRejoin ? t.noRejoin(e.noRejoin) : "";
   return [what.trim(), next].filter(Boolean).join(" ");
 }
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** RAM as Task Manager rounds it: MB below 1 GB, GB with one decimal above. */
 function memory(bytes: number) {
@@ -121,6 +118,8 @@ export default function App() {
   /** The accounts waiting for room in a full server, with how full it was at the last look. */
   const [waiting, setWaiting] = useState<Record<string, { playing: number; max: number }>>({});
   const [friendsOf, setFriendsOf] = useState<{ key: string; name: string } | null>(null);
+  const [lists, setLists] = useState<Lists>({ groups: [], profiles: [], schedule: [] });
+  const [palette, setPalette] = useState(false);
   const alarmTimer = useRef<number | undefined>(undefined);
   // Read by the listeners set up once: the names as they are now.
   const nameOf = useRef((key: string) => key);
@@ -203,6 +202,38 @@ export default function App() {
     };
   }, [loadAccounts, loadAppAccount]);
 
+  // Groups, profiles and the schedule; read again when a slot ran (its last day changed).
+  useEffect(() => {
+    const load = () => api.lists().then(setLists).catch(toast);
+    load();
+    const off = on.scheduleRan(load);
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  const saveLists = (next: Lists) =>
+    api
+      .setLists(next)
+      .then((l) => {
+        setLists(l);
+        return true;
+      })
+      .catch((e) => {
+        toast(e);
+        return false;
+      });
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
+
   // Avatars for every account shown, asked once each: an id with no image (or a failed
   // request) is not asked again until the app restarts.
   const asked = useRef(new Set<number>());
@@ -252,117 +283,118 @@ export default function App() {
   const busyNow = useRef(new Set<string>());
   const [playingAll, setPlayingAll] = useState(false);
 
-  // An account waiting for room is in here; taking it out stops the wait.
-  const waitingNow = useRef(new Set<string>());
+  // Stopping a wait for room: the card lets go at once, the run hears it at its next look (launch.rs).
   const stopWaiting = (key: string) => {
-    waitingNow.current.delete(key);
     setWaiting(({ [key]: _, ...rest }) => rest);
+    api.stopWait(key).catch(toast);
   };
 
-  /** Holds the join while the picked server is full, looking again every 15 s. False when he
-   * stopped the wait. A server not in the list (it ended, or it is past the first pages) does not
-   * hold the join: Roblox has the last word on it. */
-  const waitForSeat = async (key: string, label: string, g: Game) => {
-    const clear = () => {
-      waitingNow.current.delete(key);
-      setWaiting(({ [key]: _, ...rest }) => rest);
+  const markBusy = (key: string, on: boolean) => {
+    if (on) busyNow.current.add(key);
+    else busyNow.current.delete(key);
+    setBusy((b) => {
+      const n = new Set(b);
+      if (on) n.add(key);
+      else n.delete(key);
+      return n;
+    });
+  };
+
+  // Each step of a run (launch.rs), wherever it came from: a card, a group, a profile, the schedule.
+  useEffect(() => {
+    const off = on.launch((s) => {
+      const tx = texts();
+      const clearWait = () => setWaiting(({ [s.account]: _, ...rest }) => rest);
+      switch (s.kind) {
+        case "seat":
+          markBusy(s.account, true);
+          setWaiting((w) => ({ ...w, [s.account]: { playing: s.playing, max: s.max } }));
+          break;
+        case "opening":
+          markBusy(s.account, true);
+          clearWait();
+          break;
+        case "opened":
+          notify(s.multi ? tx.openingGame(s.game, s.name) : tx.openingWithoutMulti(s.name), s.multi ? "success" : "info");
+          if (s.account !== "app") loadAccounts();
+          // The client takes a few seconds to show; the button stays busy meanwhile.
+          setTimeout(() => markBusy(s.account, false), 4000);
+          break;
+        case "failed":
+          toast(`${s.name}: ${s.error ?? ""}`);
+          markBusy(s.account, false);
+          clearWait();
+          if (s.account !== "app") loadAccounts();
+          break;
+        case "stopped":
+          notify(tx.waitStopped(s.name), "info");
+          markBusy(s.account, false);
+          clearWait();
+          break;
+        case "seatOpened":
+          notify(tx.seatOpened(s.name));
+          break;
+        case "firstServer":
+          notify(tx.waitingFirstServer(s.name), "info");
+          break;
+        case "sameServer":
+          notify(tx.sameServerFound);
+          break;
+        case "sameServerTimeout":
+          notify(tx.sameServerTimeout, "info");
+          break;
+        case "grid":
+          notify(tx.gridDone(s.count), "info");
+          break;
+      }
+    });
+    // A window opened in the middle of a run (the schedule's, from the tray) shows who is busy.
+    api.launchBusy().then((keys) => keys.forEach((k) => markBusy(k, true)));
+    return () => {
+      off.then((f) => f());
     };
-    for (let looked = 0; ; looked++) {
-      const seat = await api.serverSeat(g.placeId, g.jobId!).catch(() => null);
-      // A failed look while already waiting keeps waiting; before that, the join goes ahead.
-      if (seat ? !seat.found || seat.playing < seat.maxPlayers : looked === 0) {
-        if (looked) notify(texts().seatOpened(label));
-        clear();
-        return true;
-      }
-      if (looked === 0) waitingNow.current.add(key);
-      if (seat) setWaiting((w) => ({ ...w, [key]: { playing: seat.playing, max: seat.maxPlayers } }));
-      await sleep(SEAT_MS);
-      if (!waitingNow.current.has(key)) {
-        notify(texts().waitStopped(label), "info");
-        clear();
-        return false;
-      }
-    }
-  };
+  }, [loadAccounts]);
 
-  /** Opens a client of the account in the game picked, or in `target`. True when it opened. */
-  const play = async (key: string, label: string, target: Game | null = game) => {
+  /** Opens a client of the account in the game picked, or in `target`. */
+  const play = async (key: string, target: Game | null = game) => {
     if (!target) {
       toast(t.pickGameFirst);
-      return false;
+      return;
     }
-    if (busyNow.current.has(key)) return false;
-    let launched = false;
-    busyNow.current.add(key);
-    setBusy((b) => new Set(b).add(key));
+    if (busyNow.current.has(key)) return;
+    markBusy(key, true);
+    let opened = 0;
     try {
-      if (target.jobId && !target.linkCode && !(await waitForSeat(key, label, target))) return false;
-      launched = true;
-      const r = await api.play(key, gameArg(target));
-      notify(r.multi ? texts().openingGame(target.name, label) : texts().openingWithoutMulti(label), r.multi ? "success" : "info");
-      if (key !== "app") loadAccounts();
-      return true;
+      opened = (await api.launch({ accounts: [key], game: gameArg(target), gameName: target.name })).opened;
     } catch (e) {
-      toast(`${label}: ${String(e)}`);
-      if (key !== "app") loadAccounts();
-      return false;
+      toast(e);
     } finally {
-      // The client takes a few seconds to show; the button stays busy meanwhile. A wait for room
-      // that he stopped opened nothing, so the button comes back at once.
-      setTimeout(() => {
-        busyNow.current.delete(key);
-        setBusy((b) => {
-          const n = new Set(b);
-          n.delete(key);
-          return n;
-        });
-      }, launched ? 4000 : 0);
+      // An open lets go 4 s after (the "opened" step); a failure or a stopped wait, at once.
+      if (!opened) markBusy(key, false);
     }
   };
 
-  const playAll = async () => {
+  /** Several accounts one after another: "Jogar com todas", a group, a profile. */
+  const runMany = async (run: () => Promise<Summary>) => {
     if (playingAll) return;
     setPlayingAll(true);
-    // Read now: each client opened writes its account as the Roblox app's login (seen 28/10/26),
-    // so the card may name the one before, and a saved account equal to the app's would open twice.
-    const app = await api.appAccount().catch(() => null);
-    if (app) setAppUser(app);
-    const list: [string, string][] = [
-      ...(app ? [["app", app.displayName] as [string, string]] : []),
-      ...accounts.filter((a) => !a.expired && a.id !== app?.id).map((a) => [String(a.id), a.displayName] as [string, string]),
-    ];
     try {
-      let target = game;
-      for (const [i, [key, label]] of list.entries()) {
-        if (i) await sleep(JOIN_GAP_MS);
-        const opened = await play(key, label, target);
-        // "Mesmo servidor" with no server picked: the others go where the first one landed.
-        if (i === 0 && opened && sameServer && target && !target.jobId && !target.linkCode && list.length > 1) {
-          notify(t.waitingFirstServer(label), "info");
-          const where = await firstServer(key);
-          if (where) {
-            target = { ...target, ...where };
-            notify(texts().sameServerFound);
-          } else notify(texts().sameServerTimeout, "info");
-        }
-      }
+      const s = await run();
+      if (s.failed.length || s.opened > 1) notify(t.runDone(s.opened, s.failed.length), s.failed.length ? "info" : "success");
+    } catch (e) {
+      toast(e);
     } finally {
       setPlayingAll(false);
     }
   };
-
-  /** The server the account's new client joined: from its log, which says it as soon as it joins,
-   * or else from its presence. Null after 90 s. */
-  const firstServer = async (key: string) => {
-    for (let waited = 0; waited < FIRST_SERVER_MS; waited += 2000) {
-      await sleep(2000);
-      const s = await api.clientServer(key).catch(() => null);
-      if (s) return s;
-    }
-    const p = (await api.presence().catch(() => ({}) as Record<string, Presence>))[key];
-    return p?.jobId && p.placeId ? { placeId: p.placeId, jobId: p.jobId } : null;
+  const planFor = (keys: string[], g: Game): Plan => ({ accounts: keys, game: gameArg(g), gameName: g.name, sameServer });
+  // The Roblox app's card first, as before; one saved account equal to it opens once (launch.rs).
+  const playAll = () => game && runMany(() => api.launch(planFor(["app", ...accounts.filter((a) => !a.expired).map((a) => String(a.id))], game)));
+  const playGroup = (g: Group) => {
+    if (!game) return toast(t.pickGameFirst);
+    runMany(() => api.launch(planFor(g.accounts, game)));
   };
+  const runProfile = (p: Profile) => runMany(() => api.runProfile(p.id));
 
   const toggleSameServer = (on: boolean) => {
     setSameServer(on);
@@ -514,6 +546,32 @@ export default function App() {
   const mood: Mood = panicName ? "panic" : cheer ? "cheering" : windowsOpen ? "playing" : "sleeping";
   const moodText = panicName ? t.mascotPanic(panicName) : cheer ? t.mascotCheering : windowsOpen ? t.mascotPlaying(windowsOpen) : t.mascotSleeping;
 
+  // The accounts the pickers and the palette name: the saved ones in card order, the Roblox app's last.
+  const people: Person[] = [
+    ...accounts.map((a) => ({ key: String(a.id), name: a.displayName, avatar: avatars[a.id] })),
+    { key: "app", name: appUser ? `${t.robloxApp} (${appUser.displayName})` : t.robloxApp, avatar: appUser ? avatars[appUser.id] : undefined },
+  ];
+  const commands = (): Command[] => {
+    const playable = [...(appUser ? [{ key: "app", name: appUser.displayName, expired: false }] : []), ...accounts.map((a) => ({ key: String(a.id), name: a.displayName, expired: a.expired }))];
+    const out: Command[] = [];
+    if (game) for (const a of playable.filter((a) => !a.expired)) out.push({ id: `play-${a.key}`, label: t.cmdPlay(a.name), hint: game.name, run: () => play(a.key) });
+    if (game && multi === true && !playingAll) out.push({ id: "play-all", label: t.playAll, hint: game.name, run: playAll });
+    if (game && !playingAll) for (const g of lists.groups) out.push({ id: `group-${g.id}`, label: t.cmdPlayGroup(g.name), hint: game.name, run: () => playGroup(g) });
+    if (!playingAll) for (const pr of lists.profiles) out.push({ id: `profile-${pr.id}`, label: t.cmdRunProfile(pr.name), hint: pr.game.name, run: () => runProfile(pr) });
+    for (const r of recents) out.push({ id: `game-${r.placeId}-${r.linkCode}`, label: t.cmdGame(r.name), run: () => pickGame(r) });
+    if (windowsOpen) out.push({ id: "grid", label: t.grid, run: () => api.grid().then((n) => notify(t.gridDone(n), "info")).catch(toast) });
+    if (windowsOpen > 1) out.push({ id: "minimize", label: t.minimizeOthers, hint: "Ctrl+Shift+0", run: () => api.minimizeOthers().catch(toast) });
+    for (const a of playable) {
+      if (clientsOf(a.key).some((c) => c.window)) out.push({ id: `focus-${a.key}`, label: t.cmdFocus(a.name), run: () => api.focusClient(a.key).catch(toast) });
+      out.push({ id: `eco-${a.key}`, label: t.cmdEco(a.name, !clients.eco.includes(a.key)), run: () => toggleEco(a.key) });
+      out.push({ id: `rejoin-${a.key}`, label: t.cmdRejoin(a.name, !clients.rejoin.includes(a.key)), run: () => toggleRejoin(a.key) });
+      if (a.key !== "app" && !a.expired) out.push({ id: `site-${a.key}`, label: t.cmdSite(a.name), run: () => api.openSite(a.key).catch(toast) });
+    }
+    out.push({ id: "add", label: t.addAccount, run: () => api.addAccount().catch(toast) });
+    out.push({ id: "lang", label: t.cmdLanguage, run: () => changeLanguage(getLang() === "en" ? "pt" : "en") });
+    return out;
+  };
+
   return (
     <>
       <div className="aura" aria-hidden>
@@ -531,6 +589,9 @@ export default function App() {
             </div>
           </div>
           <MultiPill active={multi} autoClose={autoClose} stuck={stuck} />
+          <button className="round-btn palette-btn" onClick={() => setPalette(true)} title={t.paletteButton} aria-label={t.paletteButton}>
+            <CommandIcon size={16} />
+          </button>
           <LanguageSwitch onChange={changeLanguage} />
         </header>
 
@@ -582,7 +643,7 @@ export default function App() {
                 missing={!!appError}
                 busy={busy.has("app")}
                 canPlay={!!game && !!appUser}
-                onPlay={() => appUser && play("app", appUser.displayName)}
+                onPlay={() => play("app")}
                 {...live("app")}
                 menu={appUser ? [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: "app", name: appUser.displayName }) }] : undefined}
               />
@@ -595,7 +656,7 @@ export default function App() {
                   missing={a.expired}
                   busy={busy.has(String(a.id))}
                   canPlay={!!game && !a.expired}
-                  onPlay={() => play(String(a.id), a.displayName)}
+                  onPlay={() => play(String(a.id))}
                   onRelogin={a.expired ? () => api.addAccount().catch(toast) : undefined}
                   {...live(String(a.id), i)}
                   dragId={a.id}
@@ -603,6 +664,7 @@ export default function App() {
                   dragHandlers={dragHandlers(a)}
                   menu={[
                     ...(a.expired ? [] : [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: String(a.id), name: a.displayName }) }]),
+                    ...(a.expired ? [] : [{ icon: <GlobeIcon size={16} />, label: t.openSite, run: () => api.openSite(String(a.id)).catch(toast) }]),
                     ...(i > 0 ? [{ icon: <ArrowUpIcon size={16} />, label: t.moveUp, run: () => moveUp(a, i) }] : []),
                     { icon: <TrashIcon size={16} />, label: t.removeAccount, run: () => remove(a), danger: true },
                   ]}
@@ -618,6 +680,18 @@ export default function App() {
             </div>
           </section>
 
+          <OrganizeBlock
+            lists={lists}
+            onSave={saveLists}
+            people={people}
+            game={game}
+            eco={clients.eco}
+            sameServer={sameServer}
+            running={playingAll}
+            multi={multi}
+            onPlayGroup={playGroup}
+            onRunProfile={runProfile}
+          />
           <VigiaBlock settings={vigia} saving={savingSettings} onSave={saveSettings} />
           <StatsBlock accounts={accounts} appUser={appUser} />
           <ErrorLookup />
@@ -655,6 +729,7 @@ export default function App() {
           }}
         />
       )}
+      {palette && <Palette commands={commands()} onClose={() => setPalette(false)} />}
       <Toasts />
     </>
   );

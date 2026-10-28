@@ -42,6 +42,27 @@ export type Presence = { userId: number; kind: "offline" | "site" | "game" | "st
 /** `ping`: the average of the players in the server, not this PC's. */
 export type Server = { id: string; playing: number; maxPlayers: number; fps: number | null; ping: number | null };
 export type Friend = { id: number; name: string; displayName: string; location: string; placeId: number; jobId: string | null };
+/** Accounts opening one after another (launch.rs). `game`: what `play` takes. `eco`: the accounts put in
+ * economy mode, the run's others taken out of it; left out, each stays as it is. */
+export type Plan = { accounts: string[]; game: string; gameName: string; sameServer?: boolean; eco?: string[] | null; grid?: boolean };
+export type Summary = { opened: number; failed: string[] };
+/** A step of a run. "seat": waiting for room (`playing`/`max`); "stopped": he stopped that wait. */
+export type LaunchStep = {
+  account: string;
+  name: string;
+  kind: "seat" | "opening" | "opened" | "failed" | "stopped" | "seatOpened" | "firstServer" | "sameServer" | "sameServerTimeout" | "grid";
+  game: string;
+  playing: number;
+  max: number;
+  multi: boolean;
+  error: string | null;
+  count: number;
+};
+export type Group = { id: string; name: string; accounts: string[] };
+export type Profile = { id: string; name: string; game: Game; accounts: string[]; eco: string[]; grid: boolean; sameServer: boolean };
+/** `minute`: after midnight, the PC's time. `days`: 0 for Sunday; empty for every day. `last`: the day it last ran. */
+export type Slot = { id: string; profile: string; minute: number; days: number[]; on: boolean; last: string };
+export type Lists = { groups: Group[]; profiles: Profile[]; schedule: Slot[] };
 
 export const api = {
   multiStatus: () => invoke<{ active: boolean; stuck: boolean; closed: number }>("multi_status"),
@@ -79,6 +100,14 @@ export const api = {
   /** Says how many windows it placed. */
   grid: () => invoke<number>("clients_grid"),
   minimizeOthers: () => invoke<number>("clients_minimize_others"),
+  launch: (plan: Plan) => invoke<Summary>("launch_run", { plan }),
+  stopWait: (account: string) => invoke<void>("launch_stop", { account }),
+  launchBusy: () => invoke<string[]>("launch_busy"),
+  lists: () => invoke<Lists>("organize_get"),
+  setLists: (lists: Lists) => invoke<Lists>("organize_set", { lists }),
+  runProfile: (id: string) => invoke<Summary>("profile_run", { id }),
+  /** The site logged in to a saved account, in a window of its own. */
+  openSite: (account: string) => invoke<void>("site_open", { account }),
   startup: () => invoke<boolean>("startup_get"),
   setStartup: (on: boolean) => invoke<boolean>("startup_set", { on }),
 };
@@ -95,6 +124,9 @@ export const on = {
   clientExited: (f: (c: ClientExited) => void) => listen<ClientExited>("client-exited", (e) => f(e.payload)),
   clientFell: (f: (c: ClientFell) => void) => listen<ClientFell>("client-fell", (e) => f(e.payload)),
   clientRejoin: (f: (c: ClientRejoin) => void) => listen<ClientRejoin>("client-rejoin", (e) => f(e.payload)),
+  launch: (f: (s: LaunchStep) => void) => listen<LaunchStep>("launch", (e) => f(e.payload)),
+  /** A schedule slot just ran (its id): the window reads the lists again for its last day. */
+  scheduleRan: (f: (id: string) => void) => listen<string>("schedule-ran", (e) => f(e.payload)),
   /** A saved account changed on the Rust side (a login found expired). */
   accountsChanged: (f: () => void) => listen("accounts-changed", () => f()),
   /** The hotkeys another program already holds, as "Ctrl+Shift+1, Ctrl+Shift+2". */

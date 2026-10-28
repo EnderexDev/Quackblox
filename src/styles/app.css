@@ -1249,3 +1249,206 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- Groups, profiles and the schedule (Organize.tsx) ---- */
+
+.org-part {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.org-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.org-head h3 {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.org-head .pill-btn {
+  margin-left: auto;
+}
+
+.org-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.org-row > svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.org-name {
+  flex: none;
+  font-weight: 700;
+}
+
+.org-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-row.slot {
+  flex-wrap: wrap;
+}
+
+.slot-time,
+.slot-profile,
+.sheet-input {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.slot-profile option {
+  background: var(--bg);
+}
+
+.sheet-input {
+  height: 36px;
+  font-size: 14px;
+}
+
+.slot-days {
+  display: flex;
+  gap: 2px;
+}
+
+.slot-days .day {
+  height: 26px;
+  padding: 0 7px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  background: transparent;
+}
+
+.slot-days .day.on {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+}
+
+.person.on {
+  border-color: var(--accent);
+}
+
+.person-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.small-face {
+  width: 26px;
+  height: 26px;
+}
+
+.sheet-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---- Command palette (Palette.tsx) ---- */
+
+.palette-btn {
+  margin-left: 4px;
+}
+
+.palette-backdrop {
+  place-items: start center;
+  padding-top: 12vh;
+}
+
+.palette {
+  gap: 8px;
+  width: min(560px, 100%);
+  max-height: 64vh;
+  padding: 10px;
+}
+
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.palette-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.palette-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.palette-list > .muted {
+  padding: 8px 12px;
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-weight: 600;
+}
+
+.palette-item.on {
+  background: var(--surface-3);
+}

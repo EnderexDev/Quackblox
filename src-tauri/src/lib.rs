@@ -11,11 +11,14 @@ mod app_account;
 mod clients;
 mod desktop;
 mod hotkeys;
+mod launch;
 mod logs;
 mod multi;
+mod organize;
 mod roblox;
 mod settings;
 mod setup;
+mod site;
 mod stats;
 mod vigia;
 mod win;
@@ -43,6 +46,8 @@ pub fn run() {
             clients::start(app.handle());
             hotkeys::start(app.handle().clone());
             vigia::start(app.handle().clone());
+            organize::start(app.handle().clone());
+            site::clean_up(app.handle());
             desktop::setup(app)?;
             Ok(())
         })
@@ -79,6 +84,14 @@ pub fn run() {
             clients::clients_grid,
             desktop::startup_get,
             desktop::startup_set,
+            launch::launch_run,
+            launch::launch_stop,
+            launch::launch_busy,
+            organize::organize_get,
+            organize::organize_set,
+            organize::profile_run,
+            site::site_open,
+            site::site_open_list,
         ])
         .run(context)
         .expect("error while running tauri application");

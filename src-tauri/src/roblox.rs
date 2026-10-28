@@ -99,7 +99,7 @@ pub async fn headshots(ids: &[u64]) -> Vec<(u64, String)> {
     raw.data.into_iter().filter_map(|i| Some((i.target_id, i.image_url?))).collect()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Game {
     pub place_id: u64,

@@ -278,6 +278,18 @@ pub async fn server_seat(app: AppHandle, place_id: u64, job_id: String) -> Resul
     Ok(Seat { found: false, playing: 0, max_players: 0 })
 }
 
+impl Seat {
+    pub fn found(&self) -> bool {
+        self.found
+    }
+    pub fn playing(&self) -> u32 {
+        self.playing
+    }
+    pub fn max_players(&self) -> u32 {
+        self.max_players
+    }
+}
+
 /// The friends of an account who are in a game now.
 #[tauri::command]
 pub async fn friends_in_game(app: AppHandle, account: String) -> Result<Vec<roblox::Friend>, String> {
@@ -290,6 +302,12 @@ pub async fn friends_in_game(app: AppHandle, account: String) -> Result<Vec<robl
 pub struct Joined {
     place_id: u64,
     job_id: String,
+}
+
+impl From<Joined> for (u64, String) {
+    fn from(j: Joined) -> Self {
+        (j.place_id, j.job_id)
+    }
 }
 
 /// Asks Roblox whether each saved login still works, 2 s apart, and marks the ones it refuses as
@@ -324,6 +342,30 @@ pub async fn check_logins(app: &AppHandle) -> Vec<String> {
         expired.extend(name);
     }
     expired
+}
+
+/// A saved account's name and whether its login expired, by its key; None when it is not saved.
+pub fn saved(app: &AppHandle, key: &str) -> Option<(String, bool)> {
+    let id: u64 = key.parse().ok()?;
+    app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| (s.display_name.clone(), s.expired))
+}
+
+/// A saved account's login, for the site window (site.rs). Never sent to a page.
+pub fn login(app: &AppHandle, key: &str) -> Result<String, String> {
+    let id = key.parse::<u64>().map_err(|_| tr!("conta inválida", "invalid account"))?;
+    app.state::<Store>().login_of(id)
+}
+
+/// Keeps a login Roblox renewed outside a play (the site window's), in place of the saved one.
+pub fn renew(app: &AppHandle, key: &str, cookie: &str) -> Result<(), String> {
+    let id = key.parse::<u64>().map_err(|_| tr!("conta inválida", "invalid account"))?;
+    let login = B64.encode(win::protect(cookie.as_bytes())?);
+    app.state::<Store>().update(|list| {
+        if let Some(s) = list.iter_mut().find(|s| s.id == id) {
+            s.login = login;
+            s.expired = false;
+        }
+    })
 }
 
 /// The saved account's key for a Roblox user, when it is saved.
@@ -428,6 +470,12 @@ pub struct Played {
     /// False when a Roblox opened before Quackblox still holds the lock: this client will
     /// close the one already open.
     multi: bool,
+}
+
+impl Played {
+    pub fn multi(&self) -> bool {
+        self.multi
+    }
 }
 
 /// Opens a Roblox client logged in as the account ("app" for the Roblox app's own, or a saved
