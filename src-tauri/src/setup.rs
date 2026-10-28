@@ -128,12 +128,13 @@ async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(),
     };
     let shortcut = desktop_shortcut();
     tauri::async_runtime::spawn_blocking(move || {
-        let installer = std::env::temp_dir().join(format!("Quackblox-Install-{}.exe", std::process::id()));
-        let had_shortcut = shortcut.as_ref().is_some_and(|p| p.exists());
+        // A name nobody can guess ahead, so no one holds the file open before it is written.
+        let installer = std::env::temp_dir().join(format!("Quackblox-Install-{}.exe", uuid::Uuid::new_v4()));
         let bytes = extract(offset, len)?;
         install_from(&installer, &bytes, Path::new(&dir))?;
-        // Silent NSIS always makes the desktop shortcut; /NS would skip the Start menu's too.
-        if !desktop && !had_shortcut {
+        // Silent NSIS always makes the desktop shortcut (/NS would skip the Start menu's too).
+        // Switched off, there is none afterwards, even one an earlier install made.
+        if !desktop {
             if let Some(p) = shortcut {
                 let _ = std::fs::remove_file(p);
             }
@@ -156,9 +157,18 @@ fn extract(offset: u64, len: u64) -> Result<Vec<u8>, String> {
 /// Writes `bytes` to `path` and runs them as NSIS, the file held so nothing can change or delete
 /// it in between: reopened sharing only reading (Windows still runs it), then checked against `bytes`.
 fn install_from(path: &Path, bytes: &[u8], dir: &Path) -> Result<(), String> {
-    std::fs::write(path, bytes).map_err(|e| format!("não consegui gravar o instalador: {e}"))?;
+    use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
+    // Created new (it fails on a file someone put there first) and shared for reading only while
+    // written, so no other handle can write to it in that time either.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0x1)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .map_err(|e| format!("não consegui gravar o instalador: {e}"))?;
     let result = (|| {
-        use std::os::windows::fs::OpenOptionsExt;
         // FILE_SHARE_READ only: no writing or deleting while this handle lives.
         let mut held = std::fs::OpenOptions::new()
             .read(true)

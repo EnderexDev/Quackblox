@@ -6,7 +6,13 @@ import { CloseIcon, DuckIcon, FolderIcon } from "./icons";
 import { Toggle } from "./Toggle";
 
 type Info = { version: string; dir: string; installed: boolean };
-type Stage = { kind: "ready" } | { kind: "installing" } | { kind: "done" } | { kind: "error"; message: string };
+type Stage =
+  | { kind: "ready" }
+  | { kind: "installing" }
+  | { kind: "done" }
+  | { kind: "error"; message: string }
+  /** Installed, but opening it failed: Abrir stays, nothing installs again. */
+  | { kind: "openError"; message: string };
 
 const close = () => invoke("setup_close");
 
@@ -15,6 +21,9 @@ export function Setup() {
   const [dir, setDir] = useState("");
   const [desktop, setDesktop] = useState(true);
   const [stage, setStage] = useState<Stage>({ kind: "ready" });
+  const [picking, setPicking] = useState(false);
+  /** The folder the install really went to: Abrir opens that one. */
+  const [installedDir, setInstalledDir] = useState("");
 
   useEffect(() => {
     invoke<Info>("setup_info").then((i) => {
@@ -24,9 +33,12 @@ export function Setup() {
   }, []);
 
   const install = async () => {
+    if (picking) return;
+    const target = dir;
     setStage({ kind: "installing" });
     try {
-      await invoke("setup_install", { dir, desktop });
+      await invoke("setup_install", { dir: target, desktop });
+      setInstalledDir(target);
       setStage({ kind: "done" });
     } catch (e) {
       setStage({ kind: "error", message: String(e) });
@@ -34,25 +46,31 @@ export function Setup() {
   };
 
   const pick = async () => {
-    const picked = await invoke<string | null>("setup_pick_folder");
-    if (!picked) return;
-    setDir(picked);
-    const installed = await invoke<boolean>("setup_installed", { dir: picked });
-    setInfo((i) => i && { ...i, installed });
+    setPicking(true);
+    try {
+      const picked = await invoke<string | null>("setup_pick_folder");
+      if (!picked) return;
+      setDir(picked);
+      const installed = await invoke<boolean>("setup_installed", { dir: picked });
+      setInfo((i) => i && { ...i, installed });
+    } finally {
+      setPicking(false);
+    }
   };
 
-  const open = () => invoke("setup_launch", { dir }).catch((e) => setStage({ kind: "error", message: String(e) }));
+  const open = () => invoke("setup_launch", { dir: installedDir }).catch((e) => setStage({ kind: "openError", message: String(e) }));
 
   if (!info) return <div className="setup" />;
   const busy = stage.kind === "installing";
 
-  const title = stage.kind === "done" ? "Quackblox instalado" : stage.kind === "error" ? "A instalação não foi" : "Quackblox";
+  const title =
+    stage.kind === "done" || stage.kind === "openError" ? "Quackblox instalado" : stage.kind === "error" ? "A instalação não foi" : "Quackblox";
   const line =
     stage.kind === "installing"
       ? "Instalando…"
       : stage.kind === "done"
         ? "Várias contas, um pato só."
-        : stage.kind === "error"
+        : stage.kind === "error" || stage.kind === "openError"
           ? stage.message
           : info.installed
             ? `O Quackblox ${info.version} por cima do que já está nesta pasta. Tuas contas e configurações ficam.`
@@ -76,7 +94,7 @@ export function Setup() {
           <DuckIcon size={busy ? 52 : 76} />
         </div>
         <h1>{title}</h1>
-        <p className={`setup-line ${stage.kind === "error" ? "error" : "muted"}`}>{line}</p>
+        <p className={`setup-line ${stage.kind === "error" || stage.kind === "openError" ? "error" : "muted"}`}>{line}</p>
 
         {busy && (
           <div className="setup-progress endless">
@@ -92,7 +110,7 @@ export function Setup() {
               <span className="setup-path" title={dir}>
                 {dir}
               </span>
-              <button className="pill-button" onClick={pick}>
+              <button className="pill-button" disabled={picking} onClick={pick}>
                 Alterar…
               </button>
             </div>
@@ -105,17 +123,17 @@ export function Setup() {
 
         <div className="setup-actions">
           {stage.kind === "ready" && (
-            <button className="primary" onClick={install}>
+            <button className="primary" disabled={picking} onClick={install}>
               {info.installed ? "Atualizar" : "Instalar"}
             </button>
           )}
-          {stage.kind === "done" && (
+          {(stage.kind === "done" || stage.kind === "openError") && (
             <button className="primary" onClick={open}>
               Abrir o Quackblox
             </button>
           )}
           {stage.kind === "error" && (
-            <button className="primary" onClick={install}>
+            <button className="primary" disabled={picking} onClick={install}>
               Tentar de novo
             </button>
           )}
