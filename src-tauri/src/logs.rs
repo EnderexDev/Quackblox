@@ -29,7 +29,7 @@ fn started(name: &str) -> Option<u64> {
 }
 
 /// The log of the client that started at this time (Unix seconds) as this account: the player
-/// log that started closest to it, within a second, whose join line names the account when it
+/// log that started closest to it, within 10 s, whose join line names the account when it
 /// has one. None when Roblox wrote no log for it (a client that ended at once writes none).
 pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
@@ -39,11 +39,11 @@ pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
             continue;
         }
         let Some(start) = started(&name) else { continue };
-        // Both times are cut to whole seconds. A client writes its log 0.17 s after it starts
-        // (28/10/26), so its log is in the same second or the next. Anything later is another
-        // launch's: the same account's next launch comes 4 s or more after (the Play button
-        // stays busy that long), so a client that wrote no log never takes the next one's.
-        if start + 1 < created || start > created + 1 {
+        // The name's time has whole seconds, the process's does not. Measured 28/10/26: a client
+        // started at 21:38:30.7 opened its log at 21:38:34. The join line's account tells two
+        // accounts apart; two clients of the same account opened under 10 s apart can still
+        // swap logs (the Play button stays busy 4 s after a click).
+        if start + 1 < created || start > created + 10 {
             continue;
         }
         let gap = start.abs_diff(created);
@@ -137,5 +137,8 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
         // 19:14:53Z: a window closed by him.
         let closed = of(Some(3845602757), 1_793_214_893).expect("log");
         assert_eq!(reason_in(&closed), Some(285));
+        // A client started at 21:38:30.7 whose log opened at 21:38:34, joined by JobId.
+        let late = of(Some(3845602757), 1_793_223_510).expect("log opened 4 s after the process");
+        assert_eq!(server_in(&late), Some((1818, "f612cf45-0dd5-4241-8e87-6ffde87d877c".into())));
     }
 }

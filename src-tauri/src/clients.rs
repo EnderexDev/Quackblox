@@ -52,6 +52,9 @@ struct Client {
     account: String,
     /// The account's display name, for the title.
     name: String,
+    /// The Roblox user it joined as, for finding its log. The app's account is whoever was logged
+    /// in to the Roblox app at the click, which changes, so it is kept with the client.
+    user: Option<u64>,
     proc: Proc,
     hwnd: Option<isize>,
     had_window: bool,
@@ -70,6 +73,8 @@ struct Link {
     created: u64,
     account: String,
     name: String,
+    #[serde(default)]
+    user: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -122,9 +127,11 @@ struct Exited {
     had_window: bool,
     /// Why it left its last server, from its log (Enum.ConnectionError, 285 when he left).
     reason: Option<u32>,
-    /// Creation time, for finding its log; not sent.
+    /// Creation time and user, for finding its log; not sent.
     #[serde(skip)]
     created: u64,
+    #[serde(skip)]
+    user: Option<u64>,
 }
 
 fn filetime(f: FILETIME) -> u64 {
@@ -290,7 +297,7 @@ fn hwnd(raw: isize) -> HWND {
 impl Clients {
     fn save(&self, list: &[Client]) {
         let file = File {
-            links: list.iter().map(|c| Link { pid: c.pid, created: c.created, account: c.account.clone(), name: c.name.clone() }).collect(),
+            links: list.iter().map(|c| Link { pid: c.pid, created: c.created, account: c.account.clone(), name: c.name.clone(), user: c.user }).collect(),
             eco: self.eco.lock().unwrap().iter().cloned().collect(),
         };
         let Ok(text) = serde_json::to_string_pretty(&file) else { return };
@@ -314,7 +321,7 @@ impl Clients {
     }
 
     /// Ties a client just launched to its account.
-    pub fn add(&self, process: HANDLE, account: &str, name: &str) {
+    pub fn add(&self, process: HANDLE, account: &str, name: &str, user: Option<u64>) {
         let proc = Proc(process);
         let pid = unsafe { GetProcessId(process) };
         let Some((created, busy)) = times(process) else { return };
@@ -328,6 +335,7 @@ impl Clients {
             created,
             account: account.into(),
             name: name.into(),
+            user,
             proc,
             hwnd: None,
             had_window: false,
@@ -371,9 +379,9 @@ impl Clients {
         ended
     }
 
-    /// When the account's newest client started, as Unix seconds.
-    pub fn newest_of(&self, account: &str) -> Option<u64> {
-        self.list.lock().unwrap().iter().filter(|c| c.account == account).map(|c| unix(c.created)).max()
+    /// When the account's newest client started, as Unix seconds, and the user it joined as.
+    pub fn newest_of(&self, account: &str) -> Option<(u64, Option<u64>)> {
+        self.list.lock().unwrap().iter().filter(|c| c.account == account).max_by_key(|c| c.created).map(|c| (unix(c.created), c.user))
     }
 
     /// The main window of each client of the account, in launch order.
@@ -406,6 +414,7 @@ pub fn start(app: &AppHandle) {
                 created,
                 account: l.account,
                 name: l.name,
+                user: l.user,
                 proc,
                 hwnd: None,
                 had_window: false,
@@ -441,7 +450,7 @@ pub fn start(app: &AppHandle) {
                         }
                         // The real end, not this look's: a pid reused in between must not count.
                         ended_at.push((c.pid, exit_time(h).unwrap_or_else(now_filetime)));
-                        exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window, reason: None, created: c.created });
+                        exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window, reason: None, created: c.created, user: c.user });
                         return false;
                     }
                     if !c.hwnd.is_some_and(|w| unsafe { IsWindow(Some(hwnd(w))) }.as_bool()) {
@@ -489,8 +498,7 @@ pub fn start(app: &AppHandle) {
             for mut e in exited {
                 let app = app.clone();
                 std::thread::spawn(move || {
-                    let user = crate::accounts::user_id(&e.account);
-                    e.reason = crate::logs::of(user, unix(e.created)).and_then(|p| crate::logs::reason_in(&p));
+                    e.reason = crate::logs::of(e.user, unix(e.created)).and_then(|p| crate::logs::reason_in(&p));
                     let _ = app.emit("client-exited", e);
                 });
             }
