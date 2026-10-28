@@ -115,7 +115,11 @@ async fn setup_pick_folder(app: AppHandle) -> Option<String> {
         .flatten()
         .and_then(|p| p.into_path().ok())
         // NSIS puts the files straight in the folder given: a Quackblox folder inside the one picked.
-        .map(|p| if p.ends_with(NAME) { p } else { p.join(NAME) })
+        // Windows folder names ignore case: "quackblox" picked is the install folder itself.
+        .map(|p| {
+            let is_ours = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(NAME));
+            if is_ours { p } else { p.join(NAME) }
+        })
         .map(|p| p.display().to_string())
 }
 
@@ -161,13 +165,15 @@ fn install_from(path: &Path, bytes: &[u8], dir: &Path) -> Result<(), String> {
     use std::os::windows::fs::OpenOptionsExt;
     // Created new (it fails on a file someone put there first) and shared for reading only while
     // written, so no other handle can write to it in that time either.
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .share_mode(0x1)
-        .open(path)
-        .and_then(|mut f| f.write_all(bytes))
-        .map_err(|e| format!("não consegui gravar o instalador: {e}"))?;
+    let created = std::fs::OpenOptions::new().write(true).create_new(true).share_mode(0x1).open(path);
+    let mut file = created.map_err(|e| format!("não consegui gravar o instalador: {e}"))?;
+    if let Err(e) = file.write_all(bytes) {
+        // Ours (created new above): a half-written copy is not left in TEMP.
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(format!("não consegui gravar o instalador: {e}"));
+    }
+    drop(file);
     let result = (|| {
         // FILE_SHARE_READ only: no writing or deleting while this handle lives.
         let mut held = std::fs::OpenOptions::new()
