@@ -18,13 +18,13 @@ use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, M
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetPriorityClass, GetProcessId, GetProcessTimes, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess,
+    AttachThreadInput, GetCurrentThreadId, GetExitCodeProcess, GetPriorityClass, GetProcessId, GetProcessTimes, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_VM_READ, ProcessPowerThrottling,
     SetPriorityClass, SetProcessInformation, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GetWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
+    BringWindowToTop, EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
     SMTO_ABORTIFHUNG, SW_MINIMIZE, SW_RESTORE, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow,
     SetWindowPos, ShowWindowAsync, WM_SETTEXT,
 };
@@ -223,9 +223,19 @@ fn ensure_title(hwnd: HWND, name: &str) {
 /// Brings a window forward, restored if it was minimized. Windows lets a process do it only
 /// right after input of its own: a click in Quackblox or one of its hotkeys.
 fn focus(hwnd: HWND) {
+    // Even right after a hotkey Windows refused the focus now and then (2 of 3 times with
+    // Discord in front, 28/10/26). Joined for a moment to the input of the window in front,
+    // this thread is let through. No key is sent to anyone.
+    let front = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
+    let me = unsafe { GetCurrentThreadId() };
+    let joined = front != 0 && front != me && unsafe { AttachThreadInput(me, front, true) }.as_bool();
     // Foreground first, then restored: the other way round (measured 28/10/26) a minimized
     // window comes back behind the one in front.
     let _ = unsafe { SetForegroundWindow(hwnd) };
+    let _ = unsafe { BringWindowToTop(hwnd) };
+    if joined {
+        let _ = unsafe { AttachThreadInput(me, front, false) };
+    }
     if unsafe { IsIconic(hwnd) }.as_bool() {
         let _ = unsafe { ShowWindowAsync(hwnd, SW_RESTORE) };
     }
