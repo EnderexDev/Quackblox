@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::webview::Cookie;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub const LABEL: &str = "site-";
@@ -110,17 +109,48 @@ pub async fn site_open(app: AppHandle, account: String) -> Result<(), String> {
 
     // Cookies are set and read off the main thread: on Windows the call deadlocks inside a command.
     std::thread::spawn(move || {
-        let cookie = Cookie::build((COOKIE, login)).domain(".roblox.com").path("/").secure(true).http_only(true).build();
         let home: tauri::Url = "https://www.roblox.com/home".parse().unwrap();
-        let set = window.set_cookie(cookie).is_ok() && has_login(&window);
+        if let Err(e) = set_login(&window, login) {
+            eprintln!("site: the login did not go into the site window: {e}");
+            let _ = window.close();
+            return;
+        }
+        // WebView2 stores the cookie a moment after the call returns: looked for up to 3 s.
+        let set = (0..15).any(|_| {
+            std::thread::sleep(Duration::from_millis(200));
+            has_login(&window)
+        });
         if !set {
-            eprintln!("site: the login did not go into the site window");
+            eprintln!("site: the login was not found in the site window after setting it");
             let _ = window.close();
             return;
         }
         let _ = window.navigate(home);
     });
     Ok(())
+}
+
+/// Puts the login in the window as WebView2 itself takes it. Not `set_cookie`: the cookie crate
+/// drops the leading dot of ".roblox.com" (seen 28/10/26: stored for roblox.com alone, so neither
+/// www nor the API hosts got it), and the site needs it on every roblox.com host.
+fn set_login(window: &tauri::WebviewWindow, login: String) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+    use windows_core::{HSTRING, Interface};
+    let (tx, rx) = std::sync::mpsc::channel();
+    window
+        .with_webview(move |w| {
+            let set = (|| unsafe {
+                let core: ICoreWebView2_2 = w.controller().CoreWebView2()?.cast()?;
+                let manager = core.CookieManager()?;
+                let cookie = manager.CreateCookie(&HSTRING::from(COOKIE), &HSTRING::from(login.as_str()), &HSTRING::from(".roblox.com"), &HSTRING::from("/"))?;
+                cookie.SetIsHttpOnly(true)?;
+                cookie.SetIsSecure(true)?;
+                manager.AddOrUpdateCookie(&cookie)
+            })();
+            let _ = tx.send(set.map_err(|e| e.to_string()));
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?
 }
 
 fn login_in(window: &tauri::WebviewWindow) -> Option<String> {

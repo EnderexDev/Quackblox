@@ -548,24 +548,31 @@ export default function App() {
 
   // The accounts the pickers and the palette name: the saved ones in card order, the Roblox app's last.
   const people: Person[] = [
-    ...accounts.map((a) => ({ key: String(a.id), name: a.displayName, avatar: avatars[a.id] })),
+    // The @name too when the display name differs: two accounts often share one (Enderex and EnderexDev).
+    ...accounts.map((a) => ({ key: String(a.id), name: a.displayName === a.name ? a.name : `${a.displayName} @${a.name}`, avatar: avatars[a.id] })),
     { key: "app", name: appUser ? `${t.robloxApp} (${appUser.displayName})` : t.robloxApp, avatar: appUser ? avatars[appUser.id] : undefined },
   ];
   const commands = (): Command[] => {
-    const playable = [...(appUser ? [{ key: "app", name: appUser.displayName, expired: false }] : []), ...accounts.map((a) => ({ key: String(a.id), name: a.displayName, expired: a.expired }))];
+    // Two accounts may share a display name (the Roblox app's is often a saved one): the hint says which.
+    const playable = [
+      ...(appUser ? [{ key: "app", name: appUser.displayName, who: t.robloxApp, expired: false }] : []),
+      ...accounts.map((a) => ({ key: String(a.id), name: a.displayName, who: `@${a.name}`, expired: a.expired })),
+    ];
+    // More than one account opens only with the multi on (launch.rs).
+    const canRun = (n: number) => !playingAll && (n < 2 || multi === true);
     const out: Command[] = [];
-    if (game) for (const a of playable.filter((a) => !a.expired)) out.push({ id: `play-${a.key}`, label: t.cmdPlay(a.name), hint: game.name, run: () => play(a.key) });
+    if (game) for (const a of playable.filter((a) => !a.expired)) out.push({ id: `play-${a.key}`, label: t.cmdPlay(a.name), hint: `${a.who} · ${game.name}`, run: () => play(a.key) });
     if (game && multi === true && !playingAll) out.push({ id: "play-all", label: t.playAll, hint: game.name, run: playAll });
-    if (game && !playingAll) for (const g of lists.groups) out.push({ id: `group-${g.id}`, label: t.cmdPlayGroup(g.name), hint: game.name, run: () => playGroup(g) });
-    if (!playingAll) for (const pr of lists.profiles) out.push({ id: `profile-${pr.id}`, label: t.cmdRunProfile(pr.name), hint: pr.game.name, run: () => runProfile(pr) });
+    if (game) for (const g of lists.groups.filter((g) => canRun(g.accounts.length))) out.push({ id: `group-${g.id}`, label: t.cmdPlayGroup(g.name), hint: game.name, run: () => playGroup(g) });
+    for (const pr of lists.profiles.filter((p) => canRun(p.accounts.length))) out.push({ id: `profile-${pr.id}`, label: t.cmdRunProfile(pr.name), hint: pr.game.name, run: () => runProfile(pr) });
     for (const r of recents) out.push({ id: `game-${r.placeId}-${r.linkCode}`, label: t.cmdGame(r.name), run: () => pickGame(r) });
     if (windowsOpen) out.push({ id: "grid", label: t.grid, run: () => api.grid().then((n) => notify(t.gridDone(n), "info")).catch(toast) });
     if (windowsOpen > 1) out.push({ id: "minimize", label: t.minimizeOthers, hint: "Ctrl+Shift+0", run: () => api.minimizeOthers().catch(toast) });
     for (const a of playable) {
-      if (clientsOf(a.key).some((c) => c.window)) out.push({ id: `focus-${a.key}`, label: t.cmdFocus(a.name), run: () => api.focusClient(a.key).catch(toast) });
-      out.push({ id: `eco-${a.key}`, label: t.cmdEco(a.name, !clients.eco.includes(a.key)), run: () => toggleEco(a.key) });
-      out.push({ id: `rejoin-${a.key}`, label: t.cmdRejoin(a.name, !clients.rejoin.includes(a.key)), run: () => toggleRejoin(a.key) });
-      if (a.key !== "app" && !a.expired) out.push({ id: `site-${a.key}`, label: t.cmdSite(a.name), run: () => api.openSite(a.key).catch(toast) });
+      if (clientsOf(a.key).some((c) => c.window)) out.push({ id: `focus-${a.key}`, label: t.cmdFocus(a.name), hint: a.who, run: () => api.focusClient(a.key).catch(toast) });
+      out.push({ id: `eco-${a.key}`, label: t.cmdEco(a.name, !clients.eco.includes(a.key)), hint: a.who, run: () => toggleEco(a.key) });
+      out.push({ id: `rejoin-${a.key}`, label: t.cmdRejoin(a.name, !clients.rejoin.includes(a.key)), hint: a.who, run: () => toggleRejoin(a.key) });
+      if (a.key !== "app" && !a.expired) out.push({ id: `site-${a.key}`, label: t.cmdSite(a.name), hint: a.who, run: () => api.openSite(a.key).catch(toast) });
     }
     out.push({ id: "add", label: t.addAccount, run: () => api.addAccount().catch(toast) });
     out.push({ id: "lang", label: t.cmdLanguage, run: () => changeLanguage(getLang() === "en" ? "pt" : "en") });
