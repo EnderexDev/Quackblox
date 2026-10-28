@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -64,6 +65,15 @@ pub fn run(mut context: tauri::Context<tauri::Wry>, payload: Payload) {
                 .data_directory(data)
                 .build()?;
             Ok(())
+        })
+        // While NSIS runs, Alt+F4 does not close the window: closing would end this process
+        // under a running install and leave its temp copy behind.
+        .on_window_event(|_, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if INSTALLING.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![setup_info, setup_installed, setup_pick_folder, setup_install, setup_launch, setup_close])
         .run(context)
@@ -131,7 +141,8 @@ async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(),
         (p.offset, p.len)
     };
     let shortcut = desktop_shortcut();
-    tauri::async_runtime::spawn_blocking(move || {
+    INSTALLING.store(true, Ordering::SeqCst);
+    let result = tauri::async_runtime::spawn_blocking(move || {
         // A name nobody can guess ahead, so no one holds the file open before it is written.
         let installer = std::env::temp_dir().join(format!("Quackblox-Install-{}.exe", uuid::Uuid::new_v4()));
         let bytes = extract(offset, len)?;
@@ -145,9 +156,12 @@ async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(),
         }
         Ok(())
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await;
+    INSTALLING.store(false, Ordering::SeqCst);
+    result.map_err(|e| e.to_string())?
 }
+
+static INSTALLING: AtomicBool = AtomicBool::new(false);
 
 fn extract(offset: u64, len: u64) -> Result<Vec<u8>, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
