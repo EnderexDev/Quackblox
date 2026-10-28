@@ -92,6 +92,9 @@ pub struct Clients {
     /// Clients seen ending (pid, when, as a FILETIME), newest last: a player process one of
     /// them started before it ended is a tray one. The time keeps a reused pid from counting.
     gone: Mutex<Vec<(u32, u64)>>,
+    /// Every client seen starting (user, when, Unix seconds), open or ended, newest last: where a
+    /// client's log window ends is the next start of the same user.
+    starts: Mutex<Vec<(u64, u64)>>,
 }
 
 /// What the window sees of a client.
@@ -329,6 +332,12 @@ impl Clients {
         if eco_on {
             set_eco(process, true);
         }
+        if let Some(u) = user {
+            let mut starts = self.starts.lock().unwrap();
+            starts.push((u, unix(created)));
+            let extra = starts.len().saturating_sub(64);
+            starts.drain(..extra);
+        }
         let mut list = self.list.lock().unwrap();
         list.push(Client {
             pid,
@@ -428,7 +437,8 @@ pub fn start(app: &AppHandle) {
             })
         })
         .collect();
-    let clients = Clients { path, list: Mutex::new(list), eco: Mutex::new(eco), gone: Mutex::new(vec![]) };
+    let starts = list.iter().filter_map(|c| Some((c.user?, unix(c.created)))).collect();
+    let clients = Clients { path, list: Mutex::new(list), eco: Mutex::new(eco), gone: Mutex::new(vec![]), starts: Mutex::new(starts) };
     clients.save(&clients.list.lock().unwrap());
     app.manage(clients);
 
@@ -498,11 +508,12 @@ pub fn start(app: &AppHandle) {
             }
             // The log is read off this thread: a long session's log is megabytes.
             for mut e in exited {
-                // A later client of the same user that is still open: its log is not this one's.
-                let next = {
-                    let list = clients.list.lock().unwrap();
-                    list.iter().filter(|c| c.user.is_some() && c.user == e.user && c.created > e.created).map(|c| unix(c.created)).min()
-                };
+                // A later client of the same user, open or ended: its log is not this one's.
+                let started = unix(e.created);
+                let next = e.user.and_then(|u| {
+                    let starts = clients.starts.lock().unwrap();
+                    starts.iter().filter(|&&(su, at)| su == u && at > started).map(|&(_, at)| at).min()
+                });
                 let app = app.clone();
                 std::thread::spawn(move || {
                     e.reason = crate::logs::of(e.user, unix(e.created), next).and_then(|p| crate::logs::reason_in(&p));
