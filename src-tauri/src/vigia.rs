@@ -30,6 +30,8 @@ pub struct Fall {
     pub reason: Option<u32>,
     /// "dropped", "crashed" or "joinFailed".
     pub kind: &'static str,
+    /// The card whose rejoin switch it follows when that is not its own (clients.rs).
+    pub from: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -163,10 +165,14 @@ async fn rejoin(app: AppHandle, f: Fall, key: String, mut count: usize, run: u64
         if !current(&app) {
             return;
         }
-        let error = match open(&app, &f, &mut pid).await {
+        let error = match open(&app, &f, &mut pid, &|| current(&app)).await {
             Ok(()) => None,
             Err(e) => Some(e),
         };
+        // Turned off, or back in by itself, while it got ready: nothing was opened, nothing to tell.
+        if error.is_some() && !current(&app) {
+            return;
+        }
         let _ = app.emit("client-rejoin", Rejoin { account: f.account.clone(), name: f.name.clone(), error: error.clone() });
         let Some(e) = error else { return };
         count += 1;
@@ -187,19 +193,27 @@ async fn rejoin(app: AppHandle, f: Fall, key: String, mut count: usize, run: u64
     }
 }
 
-/// Users that went back in under another card than the one with rejoin on (the Roblox app's
-/// card's account, opened again by its saved login), with that card's key: their next drop
-/// still follows that card's switch.
-static CAME_FROM: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+/// A rejoin opening a user under another card than the one with rejoin on (the Roblox app's
+/// card's account, opened again by its saved login): the client it opens is marked with that
+/// card (clients.rs), so its next drop follows that card's switch. Only for the open under way:
+/// a client he opens himself later follows its own card.
+static OPENING_FROM: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+
+/// The card a client of this user being opened now by a rejoin follows, taken once.
+pub fn take_from(user: u64) -> Option<String> {
+    OPENING_FROM.lock().unwrap().as_mut().and_then(|m| m.remove(&user))
+}
 
 /// Whether rejoin is on for the client's card, its saved account, or the card it came back from.
 fn on(app: &AppHandle, f: &Fall) -> bool {
     let clients = app.state::<Clients>();
-    let from = f.user.and_then(|u| CAME_FROM.lock().unwrap().as_ref().and_then(|m| m.get(&u).cloned()));
-    clients.rejoin_on(&f.account) || f.user.is_some_and(|u| clients.rejoin_on(&u.to_string())) || from.is_some_and(|k| clients.rejoin_on(&k))
+    clients.rejoin_on(&f.account) || f.user.is_some_and(|u| clients.rejoin_on(&u.to_string())) || f.from.as_ref().is_some_and(|k| clients.rejoin_on(k))
 }
 
-async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>) -> Result<(), String> {
+/// `still`: whether this try is still wanted, asked again after each wait, before a client is
+/// ended or opened.
+async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>, still: &(dyn Fn() -> bool + Sync)) -> Result<(), String> {
+    let stopped = || tr!("parei", "stopped");
     // With the multi off, a new client closes the ones open (Roblox's own lock).
     if !crate::multi::active() {
         return Err(tr!("o multi está desligado", "the multi is off"));
@@ -219,15 +233,22 @@ async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>) -> Result<(), St
         },
         (key, _) => key.to_string(),
     };
-    if account != f.account {
-        if let Some(user) = f.user {
-            CAME_FROM.lock().unwrap().get_or_insert_with(HashMap::new).insert(user, f.account.clone());
-        }
+    if !still() {
+        return Err(stopped());
     }
-    if let Some(p) = pid.take() {
-        // Waits up to 3 s for the end: off the async runtime.
+    if let Some(p) = *pid {
+        // Waits up to 3 s for the end: off the async runtime. One that would not end is kept for
+        // the next try: a second client beside it would only pile up.
         let handle = app.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end(p)).await;
+        let ended = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end(p)).await.unwrap_or(false);
+        let still_there = !ended && app.state::<Clients>().pids().contains(&p);
+        if still_there {
+            return Err(tr!("não consegui fechar o Roblox que caiu", "couldn't close the Roblox that dropped"));
+        }
+        *pid = None;
+    }
+    if !still() {
+        return Err(stopped());
     }
     let game = match f.kind {
         // A server that would not take it is not asked again: the next try goes to the game.
@@ -237,7 +258,15 @@ async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>) -> Result<(), St
         },
         _ => f.game.clone(),
     };
-    crate::accounts::play(app.clone(), account, game).await.map(|_| ())
+    let from = f.user.filter(|_| account != f.account);
+    if let Some(user) = from {
+        OPENING_FROM.lock().unwrap().get_or_insert_with(HashMap::new).insert(user, f.from.clone().unwrap_or_else(|| f.account.clone()));
+    }
+    let played = crate::accounts::play(app.clone(), account, game).await.map(|_| ());
+    if let Some(user) = from {
+        take_from(user);
+    }
+    played
 }
 
 /// A notice off the window: Windows' own, and Discord's when he turned it on.

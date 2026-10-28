@@ -88,6 +88,9 @@ struct Client {
     reason_seen: Option<Instant>,
     /// Ended by Quackblox (before a rejoin), so its end is no crash.
     killed: bool,
+    /// The card whose rejoin switch it follows when that is not its own: a client of the Roblox
+    /// app's account that went back in by the account's saved login.
+    from: Option<String>,
     /// Its drop was told, so its end later does not tell it again.
     told: bool,
     hwnd: Option<isize>,
@@ -111,6 +114,8 @@ struct Link {
     user: Option<u64>,
     #[serde(default)]
     game: String,
+    #[serde(default)]
+    from: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -190,6 +195,8 @@ struct Exited {
     name: String,
     #[serde(skip)]
     game: String,
+    #[serde(skip)]
+    from: Option<String>,
 }
 
 /// Why a client ended, from what its log and Windows say.
@@ -369,7 +376,7 @@ impl Clients {
         let file = File {
             links: list
                 .iter()
-                .map(|c| Link { pid: c.pid, created: c.created, account: c.account.clone(), name: c.name.clone(), user: c.user, game: c.game.clone() })
+                .map(|c| Link { pid: c.pid, created: c.created, account: c.account.clone(), name: c.name.clone(), user: c.user, game: c.game.clone(), from: c.from.clone() })
                 .collect(),
             eco: self.eco.lock().unwrap().iter().cloned().collect(),
             rejoin: self.rejoin.lock().unwrap().iter().cloned().collect(),
@@ -432,6 +439,7 @@ impl Clients {
             state: State::Starting,
             reason_seen: None,
             killed: false,
+            from: user.and_then(crate::vigia::take_from),
             told: false,
             hwnd: None,
             had_window: false,
@@ -461,12 +469,14 @@ impl Clients {
             c.killed = true;
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }.ok().map(Proc)
         };
-        let ended = own.as_ref().and_then(|p| {
-            let _ = unsafe { WaitForSingleObject(p.0, 3000) };
-            exit_time(p.0)
-        });
+        // A wait that ran out has no end time yet: the time now stands in for it.
+        let ended = own.as_ref().filter(|p| unsafe { WaitForSingleObject(p.0, 3000) } == WAIT_OBJECT_0).and_then(|p| exit_time(p.0));
         self.gone.lock().unwrap().push((pid, ended.unwrap_or_else(now_filetime)));
         true
+    }
+
+    pub fn pids(&self) -> Vec<u32> {
+        self.list.lock().unwrap().iter().map(|c| c.pid).collect()
     }
 
     pub fn rejoin_on(&self, account: &str) -> bool {
@@ -551,6 +561,7 @@ pub fn start(app: &AppHandle) {
                 state: State::Starting,
                 reason_seen: None,
                 killed: false,
+                from: l.from,
                 told: false,
                 hwnd: None,
                 had_window: false,
@@ -615,6 +626,7 @@ pub fn start(app: &AppHandle) {
                             told: c.told,
                             name: c.name.clone(),
                             game: c.game.clone(),
+                            from: c.from.clone(),
                         });
                         return false;
                     }
@@ -664,6 +676,7 @@ pub fn start(app: &AppHandle) {
                             game: c.game.clone(),
                             reason: c.tail.as_ref().and_then(|t| t.reason),
                             kind: if c.state == State::Dropped { "dropped" } else { "joinFailed" },
+                            from: c.from.clone(),
                         });
                     }
                     if !c.hwnd.is_some_and(|w| unsafe { IsWindow(Some(hwnd(w))) }.as_bool()) {
@@ -723,7 +736,7 @@ pub fn start(app: &AppHandle) {
                     e.kind = kind_of(&e);
                     // A drop told while the client ran is not told again when its dialog is closed.
                     if !e.told && matches!(e.kind, "dropped" | "crashed") {
-                        let fall = crate::vigia::Fall { pid: None, account: e.account.clone(), user: e.user, name: e.name.clone(), game: e.game.clone(), reason: e.reason, kind: e.kind };
+                        let fall = crate::vigia::Fall { pid: None, account: e.account.clone(), user: e.user, name: e.name.clone(), game: e.game.clone(), reason: e.reason, kind: e.kind, from: e.from.clone() };
                         crate::vigia::fell(&app, fall);
                     }
                     let _ = app.emit("client-exited", e);
