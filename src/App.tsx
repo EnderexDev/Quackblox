@@ -276,18 +276,20 @@ export default function App() {
 
   // Hold and drag a saved account's card to give it another place. The list moves under the
   // pointer while it is held, and the new place is saved when it is let go.
-  const drag = useRef<{ id: number; x: number; y: number; moved: boolean } | null>(null);
+  // `order` is the list of ids as it stands under the pointer, kept here so the drop reads the
+  // place moved to even before React has drawn it; `pointer` ignores a second finger.
+  const drag = useRef<{ id: number; pointer: number; x: number; y: number; moved: boolean; order: number[] } | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
   const dragHandlers = (a: Account) => ({
     onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
       // The card's own buttons keep their clicks.
-      if (e.button !== 0 || (e.target as HTMLElement).closest("button, .menu")) return;
-      drag.current = { id: a.id, x: e.clientX, y: e.clientY, moved: false };
+      if (drag.current || e.button !== 0 || (e.target as HTMLElement).closest("button, .menu")) return;
+      drag.current = { id: a.id, pointer: e.pointerId, x: e.clientX, y: e.clientY, moved: false, order: accounts.map((x) => x.id) };
       e.currentTarget.setPointerCapture(e.pointerId);
     },
     onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
       const d = drag.current;
-      if (!d) return;
+      if (!d || e.pointerId !== d.pointer) return;
       if (!d.moved) {
         if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
         d.moved = true;
@@ -296,24 +298,23 @@ export default function App() {
       const over = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-account]");
       const overId = over ? Number(over.dataset.account) : null;
       if (overId === null || overId === d.id) return;
-      setAccounts((list) => {
-        const from = list.findIndex((x) => x.id === d.id);
-        const to = list.findIndex((x) => x.id === overId);
-        if (from < 0 || to < 0) return list;
-        const next = [...list];
-        next.splice(to, 0, ...next.splice(from, 1));
-        return next;
-      });
+      const from = d.order.indexOf(d.id);
+      const to = d.order.indexOf(overId);
+      if (from < 0 || to < 0) return;
+      d.order.splice(to, 0, ...d.order.splice(from, 1));
+      const order = [...d.order];
+      setAccounts((list) => order.map((id) => list.find((x) => x.id === id)).filter((x): x is Account => !!x));
     },
-    onPointerUp: () => {
+    onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => {
       const d = drag.current;
+      if (!d || e.pointerId !== d.pointer) return;
       drag.current = null;
       setDragId(null);
-      if (!d?.moved) return;
-      const to = accounts.findIndex((x) => x.id === d.id);
-      api.moveAccount(d.id, Math.max(0, to)).catch(toast).finally(loadAccounts);
+      if (!d.moved) return;
+      api.moveAccount(d.id, Math.max(0, d.order.indexOf(d.id))).catch(toast).finally(loadAccounts);
     },
-    onPointerCancel: () => {
+    onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => {
+      if (drag.current?.pointer !== e.pointerId) return;
       drag.current = null;
       setDragId(null);
       loadAccounts();

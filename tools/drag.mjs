@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Test only: drags account card <from> onto card <to> (places among the saved accounts, from 0)
-// with real mouse events through WebView2's DevTools port, slowly, as a hand would.
-// Usage: node tools/drag.mjs <from> <to>
+// with real mouse events through WebView2's DevTools port, slowly as a hand would, or with
+// "fast" as fast as events go, released right after the last move.
+// Usage: node tools/drag.mjs <from> <to> [fast]
 const port = process.env.CDP_PORT ?? 9333;
-const [from, to] = process.argv.slice(2).map(Number);
+const [from, to] = process.argv.slice(2, 4).map(Number);
+const fast = process.argv[4] === "fast";
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
 const page = targets.find((t) => t.type === "page") ?? targets[0];
 const ws = new WebSocket(page.webSocketDebuggerUrl);
@@ -37,9 +39,9 @@ const mouse = (type, x, y, buttons) => send("Input.dispatchMouseEvent", { type, 
 await mouse("mousePressed", x0, y0, 1);
 for (let i = 1; i <= 20; i++) {
   await mouse("mouseMoved", x0 + ((x1 - x0) * i) / 20, y0 + ((y1 - y0) * i) / 20, 1);
-  await sleep(25);
+  if (!fast) await sleep(25);
 }
-console.log("while held:", await evalJs(`[...document.querySelectorAll('[data-account]')].map(c => c.querySelector('.account-name').textContent + (c.classList.contains('dragging') ? '*' : '')).join(' | ')`));
+if (!fast) console.log("while held:", await evalJs(`[...document.querySelectorAll('[data-account]')].map(c => c.querySelector('.account-name').textContent + (c.classList.contains('dragging') ? '*' : '')).join(' | ')`));
 await mouse("mouseReleased", x1, y1, 0);
 await sleep(800);
 console.log("after drop:", await evalJs(`[...document.querySelectorAll('[data-account]')].map(c => c.querySelector('.account-name').textContent).join(' | ')`));

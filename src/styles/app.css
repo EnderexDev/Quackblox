@@ -880,9 +880,10 @@
 
 /* ---- Dragging a saved account's card to another place ---- */
 
+/* pan-y: a finger sliding up or down still scrolls the list; sideways it drags the card. */
 .card.movable {
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-y;
 }
 
 .card.dragging {
