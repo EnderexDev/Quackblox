@@ -84,8 +84,9 @@ pub struct Clients {
     path: PathBuf,
     list: Mutex<Vec<Client>>,
     eco: Mutex<HashSet<String>>,
-    /// Clients seen ending, newest last: a player process they started is a tray one.
-    gone: Mutex<Vec<u32>>,
+    /// Clients seen ending (pid, when, as a FILETIME), newest last: a player process one of
+    /// them started before it ended is a tray one. The time keeps a reused pid from counting.
+    gone: Mutex<Vec<(u32, u64)>>,
 }
 
 /// What the window sees of a client.
@@ -130,6 +131,19 @@ fn times(h: HANDLE) -> Option<(u64, u64)> {
     let (mut c, mut e, mut k, mut u) = Default::default();
     unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) }.ok()?;
     Some((filetime(c), filetime(k) + filetime(u)))
+}
+
+/// Now as a FILETIME, the clock process creation times use.
+fn now_filetime() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| (d.as_nanos() / 100) as u64).unwrap_or(0) + UNIX_TO_FILETIME
+}
+
+/// Whether a process with this pid runs (any process: a reused pid reads as running, which only
+/// ever spares a tray player).
+fn running(pid: u32) -> bool {
+    let Ok(h) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }) else { return false };
+    let proc = Proc(h);
+    exit_code(proc.0).is_none()
 }
 
 fn exit_code(h: HANDLE) -> Option<u32> {
@@ -311,21 +325,27 @@ impl Clients {
     /// window closes. Measured 28/10/26: with one running, the client a link opens ends at start
     /// with 0xC0000409 and hands the game to it (a fresh tray process opens it as a window of no
     /// account) or loses it (one 20 min old did, 5 launches in a row, the site's way too). Only a
-    /// player with no window and of no account, started by a client seen ending or running for
-    /// over 30 s: a client the site just opened has no window yet either. Says how many it ended.
+    /// player with no window and of no account counts: one started by a client seen ending,
+    /// before it ended, or one over 30 s old whose parent is gone. A client the site just opened
+    /// has no window yet either, but its parent (the browser) is still running. Waits until each
+    /// one has ended, up to 3 s: the new client must not find it. Says how many it ended.
     pub fn end_tray_players(&self) -> usize {
         let ours: HashSet<u32> = self.list.lock().unwrap().iter().map(|c| c.pid).collect();
         let gone = self.gone.lock().unwrap().clone();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| (d.as_nanos() / 100) as u64).unwrap_or(0) + UNIX_TO_FILETIME;
+        let now = now_filetime();
         let mut ended = 0;
         for (pid, parent) in player_procs() {
             if ours.contains(&pid) || window_of(pid).is_some() {
                 continue;
             }
-            let Ok(h) = (unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { continue };
+            let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+            let Ok(h) = (unsafe { OpenProcess(access, false, pid) }) else { continue };
             let proc = Proc(h);
-            let tray = gone.contains(&parent) || times(proc.0).is_some_and(|(created, _)| now.saturating_sub(created) > 30 * 10_000_000);
-            if tray && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
+            let Some((created, _)) = times(proc.0) else { continue };
+            let left_by_client = gone.iter().any(|&(p, at)| p == parent && created <= at);
+            let orphan = now.saturating_sub(created) > 30 * 10_000_000 && !running(parent);
+            if (left_by_client || orphan) && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
+                let _ = unsafe { WaitForSingleObject(proc.0, 3000) };
                 ended += 1;
             }
         }
@@ -423,17 +443,20 @@ pub fn start(app: &AppHandle) {
                     clients.save(&list);
                 }
                 let mut gone = clients.gone.lock().unwrap();
-                gone.extend(exited.iter().map(|e| e.pid));
+                let at = now_filetime();
+                gone.extend(exited.iter().map(|e| (e.pid, at)));
                 let extra = gone.len().saturating_sub(64);
                 gone.drain(..extra);
             }
             // A client closing leaves a player process in the tray, born with its parent's idle
             // priority (seen 28/10/26): it goes back to normal, so nothing of Roblox stays slow
             // with no Eco shown on any card.
-            for (pid, _) in player_procs().into_iter().filter(|(_, parent)| eco_gone.contains(parent)) {
-                if let Ok(h) = unsafe { OpenProcess(PROCESS_SET_INFORMATION, false, pid) } {
-                    let child = Proc(h);
-                    set_eco(child.0, false);
+            if !eco_gone.is_empty() {
+                for (pid, _) in player_procs().into_iter().filter(|(_, parent)| eco_gone.contains(parent)) {
+                    if let Ok(h) = unsafe { OpenProcess(PROCESS_SET_INFORMATION, false, pid) } {
+                        let child = Proc(h);
+                        set_eco(child.0, false);
+                    }
                 }
             }
             for e in exited {
