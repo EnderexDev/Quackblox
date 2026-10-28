@@ -3,6 +3,7 @@
 // submits its form. CDP_PORT picks the window, as in cdp.mjs.
 //   node tools/type-in.mjs "<css selector>" "<value>" [submit]
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const [selector, value, submit] = process.argv.slice(2);
 const js = `(() => {
@@ -13,4 +14,4 @@ const js = `(() => {
   ${submit ? "setTimeout(() => el.form?.requestSubmit(), 50);" : ""}
   return "ok";
 })()`;
-console.log(execFileSync("node", [new URL("./cdp.mjs", import.meta.url).pathname.replace(/^\/(\w:)/, "$1"), "eval", js], { encoding: "utf8" }).trim());
+console.log(execFileSync("node", [fileURLToPath(new URL("./cdp.mjs", import.meta.url)), "eval", js], { encoding: "utf8" }).trim());

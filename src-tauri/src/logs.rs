@@ -61,7 +61,8 @@ pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
 }
 
 fn read(path: &PathBuf) -> String {
-    std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+    // A few hundred KB each (760 KB the largest, 28/10/26), read once per client that ends.
+    std::fs::read(path).map(|b| String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())).unwrap_or_default()
 }
 
 /// The account the client joined as.
@@ -85,6 +86,9 @@ pub fn reason_in(path: &PathBuf) -> Option<u32> {
 }
 
 fn reason_of(text: &str) -> Option<u32> {
+    // Only after the last join: a teleport joins another server, and a reason written for the
+    // one before it is not why the client ended.
+    let text = text.rfind("Joining game '").map_or(text, |at| &text[at..]);
     static REASON: OnceLock<Regex> = OnceLock::new();
     let re = REASON.get_or_init(|| Regex::new(r"(?:Disconnected from server for reason: \w+: |Sending disconnect with reason: )(\d+)").unwrap());
     re.captures_iter(text).last()?[1].parse().ok()
@@ -110,6 +114,11 @@ mod tests {
         assert_eq!(reason_of(text), Some(277));
         assert_eq!(account_in(text), Some(3845602757));
         assert_eq!(reason_of("nothing here"), None);
+        // Left one server (a teleport), joined another, then ended with no reason written.
+        let teleported = "Sending disconnect with reason: 288
+x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
+";
+        assert_eq!(reason_of(teleported), None);
     }
 
     /// On this PC's real logs: the private server join of 28/10/26 20:11:55Z, as Enderexx_1.
