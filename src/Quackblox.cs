@@ -1,4 +1,4 @@
-// Roblox Multi (StarX Studio): lets several Roblox clients run at once.
+// Quackblox (StarX Studio): lets several Roblox clients run at once.
 // Roblox allows one client per PC by owning a named mutex. If this program owns it
 // first, no client can, and each new one opens instead of closing the previous one.
 // It touches nothing in Roblox: no injection, no file edits, only the mutex.
@@ -10,12 +10,12 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-static class RobloxMulti
+static class Quackblox
 {
     const string RobloxMutexName = "ROBLOX_singletonMutex";
-    const string OwnMutexName = "StarX_RobloxMulti";
+    const string OwnMutexName = "StarX_Quackblox";
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    const string RunValue = "RobloxMulti";
+    const string RunValue = "Quackblox";
 
     static Mutex robloxMutex;
     static NotifyIcon tray;
@@ -69,7 +69,7 @@ static class RobloxMulti
         if (!warnedBusy && tray != null)
         {
             warnedBusy = true;
-            tray.ShowBalloonTip(5000, "Roblox Multi",
+            tray.ShowBalloonTip(5000, "Quackblox",
                 "Já tem um Roblox aberto. Feche ele uma vez e o multi ativa sozinho.", ToolTipIcon.Info);
         }
         return false;
@@ -79,7 +79,7 @@ static class RobloxMulti
     {
         if (tray == null) return;
         statusItem.Text = text;
-        tray.Text = "Roblox Multi: " + (active ? "ativo" : "aguardando");
+        tray.Text = "Quackblox: " + (active ? "ativo" : "aguardando");
         tray.Icon = active ? SystemIcons.Shield : SystemIcons.Warning;
     }
 
@@ -121,7 +121,7 @@ static class RobloxMulti
         var path = PlayerPath();
         if (path == null)
         {
-            MessageBox.Show("Não achei o Roblox instalado.", "Roblox Multi");
+            MessageBox.Show("Não achei o Roblox instalado.", "Quackblox");
             return;
         }
         Process.Start(new ProcessStartInfo(path) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(path) });

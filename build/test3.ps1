@@ -8,7 +8,7 @@ function Join($ticket) {
 }
 $hold = $null
 if ($WithUnlock) {
-  $hold = Start-Process "$PSScriptRoot\RobloxMultiTest.exe" -ArgumentList '--test','150' -PassThru -WindowStyle Hidden -RedirectStandardOutput "$PSScriptRoot\hold.txt"
+  $hold = Start-Process "$PSScriptRoot\QuackbloxTest.exe" -ArgumentList '--test','150' -PassThru -WindowStyle Hidden -RedirectStandardOutput "$PSScriptRoot\hold.txt"
   Start-Sleep 2
   "unlock: " + (Get-Content "$PSScriptRoot\hold.txt")
 }

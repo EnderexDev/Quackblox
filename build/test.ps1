@@ -7,7 +7,7 @@ $player = ($cmd -split '"')[1]
 
 $hold = $null
 if ($WithUnlock) {
-  $hold = Start-Process "$PSScriptRoot\RobloxMultiTest.exe" -ArgumentList '--test','90' -PassThru -WindowStyle Hidden -RedirectStandardOutput "$PSScriptRoot\hold.txt"
+  $hold = Start-Process "$PSScriptRoot\QuackbloxTest.exe" -ArgumentList '--test','90' -PassThru -WindowStyle Hidden -RedirectStandardOutput "$PSScriptRoot\hold.txt"
   Start-Sleep 2
   "unlock: " + (Get-Content "$PSScriptRoot\hold.txt")
 }
