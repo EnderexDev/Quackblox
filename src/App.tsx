@@ -29,6 +29,8 @@ import { errorNames } from "./errorCodes";
 
 const NO_CLIENTS: Clients = { clients: [], eco: [], rejoin: [], others: 0 };
 type VigiaSettings = Pick<Settings, "alertWindows" | "alertDiscord" | "discordWebhook" | "loginCheck">;
+/** Only the watch's own fields: the whole set also carries the language, which must not ride along. */
+const vigiaOf = (s: Settings): VigiaSettings => ({ alertWindows: s.alertWindows, alertDiscord: s.alertDiscord, discordWebhook: s.discordWebhook, loginCheck: s.loginCheck });
 const NO_VIGIA: VigiaSettings = { alertWindows: true, alertDiscord: false, discordWebhook: "", loginCheck: false };
 /** How long the duck panics after a drop, and cheers once every client is in. */
 const PANIC_MS = 8000;
@@ -145,7 +147,7 @@ export default function App() {
     api.settings().then((s) => {
       setAutoClose(s.autoClose);
       setHotkeys(s.hotkeys);
-      setVigia(s);
+      setVigia(vigiaOf(s));
     });
     api.clients().then(setClients);
     loadAccounts();
@@ -388,7 +390,7 @@ export default function App() {
     if (l === before) return;
     setLang(l);
     api
-      .setSettings({ autoClose, language: l, hotkeys, ...vigia })
+      .setSettings({ autoClose, hotkeys, ...vigia, language: l })
       .then((s) => setLang(s.language))
       .catch((e) => {
         setLang(before);
@@ -404,7 +406,7 @@ export default function App() {
       .then((s) => {
         setAutoClose(s.autoClose);
         setHotkeys(s.hotkeys);
-        setVigia(s);
+        setVigia(vigiaOf(s));
         return true;
       })
       .catch((e) => {
@@ -493,7 +495,8 @@ export default function App() {
   // The duck cheers once every client open is inside a game (from one that was not), and panics
   // after a drop or while a client sits on Roblox's error dialog.
   const inGame = clients.clients.filter((c) => c.state === "inGame").length;
-  const allIn = inGame > 0 && inGame === clients.clients.length;
+  // "Todas": two or more. One account joining alone is no cheer, nor the first of a "Jogar com todas".
+  const allIn = inGame > 1 && inGame === clients.clients.length;
   const wasAllIn = useRef(allIn);
   const cheerTimer = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -1277,7 +1280,8 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
       api
         .game(id)
         .then((g) => setNames((n) => ({ ...n, [id]: g.name })))
-        .catch(() => {});
+        // Asked again at the next reload (a minute): a refusal at the start is not for ever.
+        .catch(() => asked.current.delete(id));
     });
   }, [stats]);
   useEffect(() => {
