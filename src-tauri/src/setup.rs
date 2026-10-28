@@ -254,8 +254,13 @@ fn write_held(path: &Path, bytes: &[u8]) -> Result<File, String> {
         if !meta.is_file() || meta.file_type().is_symlink() {
             return Err("o arquivo virou um atalho antes de rodar".to_string());
         }
+        // A different size is a different file: refused before reading, and never read past
+        // the expected size, whatever was put there.
+        if meta.len() != bytes.len() as u64 {
+            return Err("o arquivo mudou no disco antes de rodar".to_string());
+        }
         let mut on_disk = Vec::with_capacity(bytes.len());
-        held.read_to_end(&mut on_disk).map_err(|e| format!("não consegui ler o arquivo: {e}"))?;
+        (&mut held).take(bytes.len() as u64 + 1).read_to_end(&mut on_disk).map_err(|e| format!("não consegui ler o arquivo: {e}"))?;
         if on_disk != bytes {
             return Err("o arquivo mudou no disco antes de rodar".to_string());
         }
