@@ -89,13 +89,70 @@ pub fn reason_in(path: &PathBuf) -> Option<u32> {
     reason_of(&read(path))
 }
 
+fn reason_re() -> &'static Regex {
+    static REASON: OnceLock<Regex> = OnceLock::new();
+    REASON.get_or_init(|| Regex::new(r"(?:Disconnected from server for reason: \w+: |Sending disconnect with reason: )(\d+)").unwrap())
+}
+
 fn reason_of(text: &str) -> Option<u32> {
     // Only after the last join: a teleport joins another server, and a reason written for the
-    // one before it is not why the client ended.
+    // one before it is not why the client ended. The first one after it is the cause: what the
+    // client writes later (closing the error dialog) is not.
     let text = text.rfind("Joining game '").map_or(text, |at| &text[at..]);
-    static REASON: OnceLock<Regex> = OnceLock::new();
-    let re = REASON.get_or_init(|| Regex::new(r"(?:Disconnected from server for reason: \w+: |Sending disconnect with reason: )(\d+)").unwrap());
-    re.captures_iter(text).last()?[1].parse().ok()
+    reason_re().captures(text)?[1].parse().ok()
+}
+
+/// What a running client's log said so far, read a piece at a time as Roblox appends to it.
+pub struct Tail {
+    path: PathBuf,
+    /// Bytes read up to the end of the last whole line.
+    offset: u64,
+    /// The place of the last server joined, once the join finished (`game_join_loadtime`).
+    pub joined: Option<u64>,
+    /// The first reason written after the last join: why it left that server.
+    pub reason: Option<u32>,
+}
+
+impl Tail {
+    pub fn new(path: PathBuf) -> Self {
+        Tail { path, offset: 0, joined: None, reason: None }
+    }
+
+    /// Reads what was appended since the last call. A line Roblox is still writing waits for the
+    /// next call.
+    pub fn read(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = std::fs::File::open(&self.path) else { return };
+        if f.seek(SeekFrom::Start(self.offset)).is_err() {
+            return;
+        }
+        let mut bytes = vec![];
+        // At most 4 MB a look: a client restored after a restart reads its whole log once.
+        if f.take(4 << 20).read_to_end(&mut bytes).is_err() {
+            return;
+        }
+        let Some(end) = bytes.iter().rposition(|&b| b == b'\n') else { return };
+        self.offset += end as u64 + 1;
+        self.feed(&String::from_utf8_lossy(&bytes[..end]));
+    }
+
+    fn feed(&mut self, text: &str) {
+        static PLACE: OnceLock<Regex> = OnceLock::new();
+        let place = PLACE.get_or_init(|| Regex::new(r"game_join_loadtime: placeid:(\d+)").unwrap());
+        for line in text.lines() {
+            // A new server (the first, or a teleport's): whatever ended the one before is over.
+            if line.contains("Joining game '") {
+                self.joined = None;
+                self.reason = None;
+            } else if let Some(c) = place.captures(line) {
+                self.joined = c[1].parse().ok();
+            } else if self.reason.is_none() {
+                if let Some(c) = reason_re().captures(line) {
+                    self.reason = c[1].parse().ok();
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -115,7 +172,9 @@ mod tests {
             x [FLog::GameJoinLoadTime] Report game_join_loadtime: placeid:94717504417144, join_time:3.6, universeid:1, referral_page:RequestPrivateGame, sid:a, userid:3845602757, \n\
             x [FLog::Network] Sending disconnect with reason: 285\n\
             x Info [DFLog::RbxTransportDummyClient] Disconnected from server for reason: Player: 277 (DisconnectConnectionLost)\n";
-        assert_eq!(reason_of(text), Some(277));
+        // The first reason after the join is why it left: what comes after is the dialog's close.
+        assert_eq!(reason_of(text), Some(285));
+        assert_eq!(reason_of(&text.replace("reason: 285", "reason: 273")), Some(273));
         assert_eq!(account_in(text), Some(3845602757));
         assert_eq!(reason_of("nothing here"), None);
         // Left one server (a teleport), joined another, then ended with no reason written.
@@ -123,6 +182,35 @@ mod tests {
 x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
 ";
         assert_eq!(reason_of(teleported), None);
+    }
+
+    #[test]
+    fn tail_reads_only_what_was_added() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("quackblox-tail-{}.log", std::process::id()));
+        let mut f = std::fs::File::create(&path).unwrap();
+        let mut tail = Tail::new(path.clone());
+        writeln!(f, "x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1818 at a").unwrap();
+        tail.read();
+        assert_eq!((tail.joined, tail.reason), (None, None), "joining, not in yet");
+        // Half a line: it waits for the rest.
+        write!(f, "x Report game_join_loadtime: placeid:18").unwrap();
+        f.flush().unwrap();
+        tail.read();
+        assert_eq!(tail.joined, None);
+        writeln!(f, "18, join_time:1.2, userid:1, ").unwrap();
+        tail.read();
+        assert_eq!(tail.joined, Some(1818));
+        writeln!(f, "x Warning [FLog::Network] Lost connection with reason : another device\nx Sending disconnect with reason: 276").unwrap();
+        writeln!(f, "x Sending disconnect with reason: 285").unwrap();
+        tail.read();
+        assert_eq!(tail.reason, Some(276), "the first reason stays");
+        // A teleport: the next server's join clears what ended the last one.
+        writeln!(f, "x ! Joining game '11111111-9174-447f-97f1-e4ef40c6d8c0' place 2 at a\nx game_join_loadtime: placeid:2, userid:1").unwrap();
+        tail.read();
+        assert_eq!((tail.joined, tail.reason), (Some(2), None));
+        drop(f);
+        let _ = std::fs::remove_file(path);
     }
 
     /// On this PC's real logs: the private server join of 28/10/26 20:11:55Z, as Enderexx_1.
@@ -143,5 +231,13 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
         assert_eq!(server_in(&late), Some((1818, "f612cf45-0dd5-4241-8e87-6ffde87d877c".into())));
         // A later client of the same user started at 21:38:33: the log at :34 is that one's.
         assert!(of(Some(3845602757), 1_793_223_510, Some(1_793_223_513)).is_none());
+        // Read as it ran: a client knocked out at 21:55:14 (276), whose dialog stayed up.
+        let dir = dir().unwrap();
+        let mut dropped = Tail::new(dir.join("0.745.0.7451137_20261028T215505Z_Player_7ADF9_last.log"));
+        dropped.read();
+        assert_eq!((dropped.joined, dropped.reason), (Some(1818), Some(276)));
+        let mut closed = Tail::new(dir.join("0.745.0.7451137_20261028T191420Z_Player_C5015_last.log"));
+        closed.read();
+        assert_eq!((closed.joined, closed.reason), (Some(1818), Some(285)));
     }
 }

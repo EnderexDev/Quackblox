@@ -3,8 +3,9 @@
 // command line is ever read. A thread looks at every client once a second: its window (found
 // about 7 s after the click, measured 28/10/26) gets the account's name in its title, its CPU
 // and RAM go to the window, the economy mode stays applied, and its end is heard with the exit
-// code (phase 3 tells a crash from a close with it). The links live in clients.json, so a
-// Quackblox restarted (an update) finds the clients still open.
+// code. Its log is read as Roblox writes it: the join, and a drop, which leaves the client open
+// with an error dialog (measured 28/10/26), are seen while it runs; vigia.rs acts on a drop. The
+// links live in clients.json, so a Quackblox restarted (an update) finds the clients still open.
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -31,6 +32,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 
 const PLAYER_EXE: &str = "RobloxPlayerBeta.exe";
+/// A reason in the log stands this long with no new join before it counts as a drop: a teleport
+/// leaves one server and joins the next.
+const DROP_GRACE: Duration = Duration::from_secs(10);
+/// A client whose log shows no game this long after it started never joined: a refused entry
+/// shows only a dialog, and a server that does not exist leaves it on the loading screen (both
+/// measured 28/10/26, neither writes a code).
+const JOIN_LIMIT: u64 = 120;
+/// How long after its start a client's log is looked for: it opens about 3 s in.
+const LOG_LIMIT: u64 = 60;
 /// 1601-01-01 to 1970-01-01 in FILETIME's 100 ns units.
 const UNIX_TO_FILETIME: u64 = 116_444_736_000_000_000;
 
@@ -44,6 +54,18 @@ impl Drop for Proc {
     }
 }
 
+/// Where a client is, from its log.
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum State {
+    Starting,
+    InGame,
+    /// Out of the server, the error dialog on screen.
+    Dropped,
+    /// Never got into a game.
+    JoinFailed,
+}
+
 struct Client {
     pid: u32,
     /// Process creation time: a pid reused by another process after a restart has another.
@@ -55,7 +77,19 @@ struct Client {
     /// The Roblox user it joined as, for finding its log. The app's account is whoever was logged
     /// in to the Roblox app at the click, which changes, so it is kept with the client.
     user: Option<u64>,
+    /// What `play` was given for the game, to open it again; empty for a link saved before 0.5.
+    game: String,
     proc: Proc,
+    tail: Option<crate::logs::Tail>,
+    /// The log was looked for once: a client restored after a restart gets one look.
+    looked: bool,
+    state: State,
+    /// When the reason now in the log was first seen, for the teleport grace.
+    reason_seen: Option<Instant>,
+    /// Ended by Quackblox (before a rejoin), so its end is no crash.
+    killed: bool,
+    /// Its drop was told, so its end later does not tell it again.
+    told: bool,
     hwnd: Option<isize>,
     had_window: bool,
     /// The economy mode set on it, so turning it off restores only what Quackblox changed.
@@ -75,6 +109,8 @@ struct Link {
     name: String,
     #[serde(default)]
     user: Option<u64>,
+    #[serde(default)]
+    game: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -83,12 +119,15 @@ struct File {
     links: Vec<Link>,
     /// Accounts with the economy mode on, kept for their next clients too.
     eco: Vec<String>,
+    /// Accounts that go back in by themselves when they drop (vigia.rs).
+    rejoin: Vec<String>,
 }
 
 pub struct Clients {
     path: PathBuf,
     list: Mutex<Vec<Client>>,
     eco: Mutex<HashSet<String>>,
+    rejoin: Mutex<HashSet<String>>,
     /// Clients seen ending (pid, when, as a FILETIME), newest last: a player process one of
     /// them started before it ended is a tray one. The time keeps a reused pid from counting.
     gone: Mutex<Vec<(u32, u64)>>,
@@ -108,6 +147,9 @@ pub struct ClientInfo {
     /// Working set in bytes.
     ram: u64,
     window: bool,
+    state: State,
+    /// Why it left the server, while it is out of one.
+    reason: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -115,6 +157,7 @@ pub struct ClientInfo {
 pub struct Snapshot {
     clients: Vec<ClientInfo>,
     eco: Vec<String>,
+    rejoin: Vec<String>,
     /// Roblox player windows Quackblox did not open (the site's Play button, the app's own icon).
     others: usize,
 }
@@ -130,11 +173,35 @@ struct Exited {
     had_window: bool,
     /// Why it left its last server, from its log (Enum.ConnectionError, 285 when he left).
     reason: Option<u32>,
-    /// Creation time and user, for finding its log; not sent.
+    /// "closed" (by him), "dropped", "crashed", "joinFailed" or "ended" (by Quackblox).
+    kind: &'static str,
+    /// For finding its log and telling a drop; not sent.
     #[serde(skip)]
     created: u64,
     #[serde(skip)]
     user: Option<u64>,
+    #[serde(skip)]
+    join_failed: bool,
+    #[serde(skip)]
+    killed: bool,
+    #[serde(skip)]
+    told: bool,
+    #[serde(skip)]
+    name: String,
+    #[serde(skip)]
+    game: String,
+}
+
+/// Why a client ended, from what its log and Windows say.
+fn kind_of(e: &Exited) -> &'static str {
+    match e.reason {
+        _ if e.killed => "ended",
+        Some(285) => "closed",
+        Some(_) => "dropped",
+        None if e.join_failed => "joinFailed",
+        None if e.code != 0 => "crashed",
+        None => "closed",
+    }
 }
 
 fn filetime(f: FILETIME) -> u64 {
@@ -300,8 +367,12 @@ fn hwnd(raw: isize) -> HWND {
 impl Clients {
     fn save(&self, list: &[Client]) {
         let file = File {
-            links: list.iter().map(|c| Link { pid: c.pid, created: c.created, account: c.account.clone(), name: c.name.clone(), user: c.user }).collect(),
+            links: list
+                .iter()
+                .map(|c| Link { pid: c.pid, created: c.created, account: c.account.clone(), name: c.name.clone(), user: c.user, game: c.game.clone() })
+                .collect(),
             eco: self.eco.lock().unwrap().iter().cloned().collect(),
+            rejoin: self.rejoin.lock().unwrap().iter().cloned().collect(),
         };
         let Ok(text) = serde_json::to_string_pretty(&file) else { return };
         let tmp = self.path.with_extension("json.tmp");
@@ -316,15 +387,24 @@ impl Clients {
         Snapshot {
             clients: list
                 .iter()
-                .map(|c| ClientInfo { pid: c.pid, account: c.account.clone(), cpu: c.cpu, ram: c.ram, window: c.hwnd.is_some() })
+                .map(|c| ClientInfo {
+                    pid: c.pid,
+                    account: c.account.clone(),
+                    cpu: c.cpu,
+                    ram: c.ram,
+                    window: c.hwnd.is_some(),
+                    state: c.state,
+                    reason: if c.state == State::Dropped { c.tail.as_ref().and_then(|t| t.reason) } else { None },
+                })
                 .collect(),
             eco: self.eco.lock().unwrap().iter().cloned().collect(),
+            rejoin: self.rejoin.lock().unwrap().iter().cloned().collect(),
             others,
         }
     }
 
     /// Ties a client just launched to its account.
-    pub fn add(&self, process: HANDLE, account: &str, name: &str, user: Option<u64>) {
+    pub fn add(&self, process: HANDLE, account: &str, name: &str, user: Option<u64>, game: &str) {
         let proc = Proc(process);
         let pid = unsafe { GetProcessId(process) };
         let Some((created, busy)) = times(process) else { return };
@@ -345,7 +425,14 @@ impl Clients {
             account: account.into(),
             name: name.into(),
             user,
+            game: game.into(),
             proc,
+            tail: None,
+            looked: false,
+            state: State::Starting,
+            reason_seen: None,
+            killed: false,
+            told: false,
             hwnd: None,
             had_window: false,
             eco_on,
@@ -355,6 +442,29 @@ impl Clients {
             ram: 0,
         });
         self.save(&list);
+    }
+
+    /// Ends a client of Quackblox's (a dropped one, before it goes back in) and waits up to 3 s
+    /// for it. Its end is marked as Quackblox's, and the tray player it may leave counts as one
+    /// for the next launch to end.
+    pub fn end(&self, pid: u32) -> bool {
+        let h = {
+            let mut list = self.list.lock().unwrap();
+            let Some(c) = list.iter_mut().find(|c| c.pid == pid) else { return false };
+            c.killed = true;
+            c.proc.0
+        };
+        // The handle stays open: only the watcher drops the client, once it sees the end.
+        if unsafe { TerminateProcess(h, 0) }.is_err() {
+            return false;
+        }
+        let _ = unsafe { WaitForSingleObject(h, 3000) };
+        self.gone.lock().unwrap().push((pid, exit_time(h).unwrap_or_else(now_filetime)));
+        true
+    }
+
+    pub fn rejoin_on(&self, account: &str) -> bool {
+        self.rejoin.lock().unwrap().contains(account)
     }
 
     /// Ends the Roblox players left in the tray: the process a client leaves behind when its
@@ -405,8 +515,10 @@ pub fn start(app: &AppHandle) {
     let dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
     let path = dir.join("clients.json");
     let file: File = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_VM_READ;
+    // Terminate too: a dropped client found after a restart is ended before it goes back in.
+    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_VM_READ | PROCESS_TERMINATE;
     let eco: HashSet<String> = file.eco.into_iter().collect();
+    let rejoin: HashSet<String> = file.rejoin.into_iter().collect();
     let list: Vec<Client> = file
         .links
         .into_iter()
@@ -426,7 +538,14 @@ pub fn start(app: &AppHandle) {
                 account: l.account,
                 name: l.name,
                 user,
+                game: l.game,
                 proc,
+                tail: None,
+                looked: false,
+                state: State::Starting,
+                reason_seen: None,
+                killed: false,
+                told: false,
                 hwnd: None,
                 had_window: false,
                 eco_on,
@@ -438,7 +557,14 @@ pub fn start(app: &AppHandle) {
         })
         .collect();
     let starts = list.iter().filter_map(|c| Some((c.user?, unix(c.created)))).collect();
-    let clients = Clients { path, list: Mutex::new(list), eco: Mutex::new(eco), gone: Mutex::new(vec![]), starts: Mutex::new(starts) };
+    let clients = Clients {
+        path,
+        list: Mutex::new(list),
+        eco: Mutex::new(eco),
+        rejoin: Mutex::new(rejoin),
+        gone: Mutex::new(vec![]),
+        starts: Mutex::new(starts),
+    };
     clients.save(&clients.list.lock().unwrap());
     app.manage(clients);
 
@@ -451,6 +577,13 @@ pub fn start(app: &AppHandle) {
             let mut exited = vec![];
             let mut eco_gone = vec![];
             let mut ended_at = vec![];
+            let mut fell = vec![];
+            let mut joined = vec![];
+            let mut in_game = vec![];
+            // A later client of the same user, open or ended: its log is not this one's.
+            let starts = clients.starts.lock().unwrap().clone();
+            let next_start = |user: Option<u64>, started: u64| user.and_then(|u| starts.iter().filter(|&&(su, at)| su == u && at > started).map(|&(_, at)| at).min());
+            let now = unix(now_filetime());
             {
                 let mut list = clients.list.lock().unwrap();
                 let before = list.len();
@@ -462,8 +595,70 @@ pub fn start(app: &AppHandle) {
                         }
                         // The real end, not this look's: a pid reused in between must not count.
                         ended_at.push((c.pid, exit_time(h).unwrap_or_else(now_filetime)));
-                        exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window, reason: None, created: c.created, user: c.user });
+                        exited.push(Exited {
+                            pid: c.pid,
+                            account: c.account.clone(),
+                            code,
+                            had_window: c.had_window,
+                            reason: None,
+                            kind: "",
+                            created: c.created,
+                            user: c.user,
+                            join_failed: c.state == State::JoinFailed,
+                            killed: c.killed,
+                            told: c.told,
+                            name: c.name.clone(),
+                            game: c.game.clone(),
+                        });
                         return false;
+                    }
+                    let started = unix(c.created);
+                    if c.tail.is_none() && (!c.looked || now.saturating_sub(started) < LOG_LIMIT) {
+                        c.looked = true;
+                        c.tail = crate::logs::of(c.user, started, next_start(c.user, started)).map(crate::logs::Tail::new);
+                    }
+                    let was = c.state;
+                    if let Some(tail) = c.tail.as_mut() {
+                        tail.read();
+                        // 285 is him leaving: the client ends in a moment and is no drop.
+                        match (tail.joined, tail.reason.filter(|&r| r != 285)) {
+                            (Some(_), None) => {
+                                c.reason_seen = None;
+                                c.state = State::InGame;
+                            }
+                            (_, Some(_)) => {
+                                if c.reason_seen.get_or_insert_with(Instant::now).elapsed() >= DROP_GRACE {
+                                    c.state = State::Dropped;
+                                }
+                            }
+                            (None, None) => {
+                                // Only a log that exists and shows no game: a client restored with
+                                // no log found is not taken for a failed join.
+                                if c.state == State::Starting && now.saturating_sub(started) > JOIN_LIMIT {
+                                    c.state = State::JoinFailed;
+                                }
+                            }
+                        }
+                        if c.state == State::InGame {
+                            if let (Some(u), Some(place)) = (c.user, tail.joined) {
+                                in_game.push((u, place));
+                            }
+                        }
+                    }
+                    if c.state == State::InGame && was != State::InGame {
+                        joined.push((c.account.clone(), c.user));
+                    }
+                    if matches!(c.state, State::Dropped | State::JoinFailed) && !c.told && !c.killed {
+                        c.told = true;
+                        fell.push(crate::vigia::Fall {
+                            pid: Some(c.pid),
+                            account: c.account.clone(),
+                            user: c.user,
+                            name: c.name.clone(),
+                            game: c.game.clone(),
+                            reason: c.tail.as_ref().and_then(|t| t.reason),
+                            kind: if c.state == State::Dropped { "dropped" } else { "joinFailed" },
+                        });
                     }
                     if !c.hwnd.is_some_and(|w| unsafe { IsWindow(Some(hwnd(w))) }.as_bool()) {
                         c.hwnd = window_of(c.pid).map(|w| w.0 as isize);
@@ -506,17 +701,25 @@ pub fn start(app: &AppHandle) {
                     }
                 }
             }
+            crate::stats::add(&app, &in_game);
+            for (account, user) in joined {
+                crate::vigia::joined(&app, &account, user);
+            }
+            for f in fell {
+                crate::vigia::fell(&app, f);
+            }
             // The log is read off this thread: a long session's log is megabytes.
             for mut e in exited {
-                // A later client of the same user, open or ended: its log is not this one's.
-                let started = unix(e.created);
-                let next = e.user.and_then(|u| {
-                    let starts = clients.starts.lock().unwrap();
-                    starts.iter().filter(|&&(su, at)| su == u && at > started).map(|&(_, at)| at).min()
-                });
+                let next = next_start(e.user, unix(e.created));
                 let app = app.clone();
                 std::thread::spawn(move || {
                     e.reason = crate::logs::of(e.user, unix(e.created), next).and_then(|p| crate::logs::reason_in(&p));
+                    e.kind = kind_of(&e);
+                    // A drop told while the client ran is not told again when its dialog is closed.
+                    if !e.told && matches!(e.kind, "dropped" | "crashed") {
+                        let fall = crate::vigia::Fall { pid: None, account: e.account.clone(), user: e.user, name: e.name.clone(), game: e.game.clone(), reason: e.reason, kind: e.kind };
+                        crate::vigia::fell(&app, fall);
+                    }
                     let _ = app.emit("client-exited", e);
                 });
             }
@@ -599,6 +802,20 @@ pub fn clients_set_eco(clients: tauri::State<Clients>, account: String, on: bool
         }
         clients.save(&list);
     }
+    clients.snapshot(others(&clients))
+}
+
+/// Turns going back in by itself on or off for an account (vigia.rs).
+#[tauri::command]
+pub fn clients_set_rejoin(clients: tauri::State<Clients>, account: String, on: bool) -> Snapshot {
+    {
+        let mut rejoin = clients.rejoin.lock().unwrap();
+        if on { rejoin.insert(account.clone()) } else { rejoin.remove(&account) };
+    }
+    if !on {
+        crate::vigia::cancel(&account);
+    }
+    clients.save(&clients.list.lock().unwrap());
     clients.snapshot(others(&clients))
 }
 

@@ -1,10 +1,12 @@
 // The duck in the top bar, drawn in the app icon's colours. It sleeps under a nightcap while no
-// Roblox is open and plays with a controller while any is. Phase 3 adds moods for every account
-// joining and for one dropping; each mood is a class on the root, its motion in mascot.css.
-export type Mood = "sleeping" | "playing";
+// Roblox is open and plays with a controller while any is. It cheers when every open client got
+// into a game and panics when one drops (phase 3); each mood is a class on the root, its motion
+// in mascot.css.
+export type Mood = "sleeping" | "playing" | "cheering" | "panic";
 
 export function Mascot({ mood, size = 52 }: { mood: Mood; size?: number }) {
   const asleep = mood === "sleeping";
+  const pad = mood === "playing";
   return (
     <svg className={`mascot ${mood}`} width={size} height={size} viewBox="0 0 100 100" aria-hidden>
       <ellipse className="m-shadow" cx="49" cy="91" rx="31" ry="4.2" />
@@ -18,17 +20,36 @@ export function Mascot({ mood, size = 52 }: { mood: Mood; size?: number }) {
           {!asleep && <path className="m-tuft" d="M60.5 19.6c-1.4-4.6.6-8.7 4.4-9.6-1 2.6-.5 5.4 1.5 8.1z" />}
           <circle className="m-skull" cx="64" cy="37" r="18.5" />
           <path className="m-head-shine" d="M53.4 29.6c1.7-4.3 5.4-7.2 9.7-7.9" />
-          <path className="m-beak-low" d="M80 41.5c5.5.4 11 .8 13.3 2.4-2.5 3-8.6 3.6-13.6 2z" />
-          <path className="m-beak" d="M79.3 34.5c6.6-1.6 13.3-.6 15.5 2.5 1 1.5-.4 3.5-3.4 4.2-3.8.9-8.6.6-12.6-.6z" />
+          {mood === "panic" ? (
+            // Beak open in a squawk.
+            <>
+              <path className="m-beak-low" d="M80 43c5.5 1.8 10.6 4 12.4 6.6-3 2-8.8 1.4-13-1.6z" />
+              <path className="m-beak" d="M79.3 33.5c6.6-2.4 13.3-2 15.5 1 1 1.5-.4 3.5-3.4 4.4-3.8 1.1-8.6 1-12.6-.2z" />
+            </>
+          ) : (
+            <>
+              <path className="m-beak-low" d="M80 41.5c5.5.4 11 .8 13.3 2.4-2.5 3-8.6 3.6-13.6 2z" />
+              <path className="m-beak" d="M79.3 34.5c6.6-1.6 13.3-.6 15.5 2.5 1 1.5-.4 3.5-3.4 4.2-3.8.9-8.6.6-12.6-.6z" />
+            </>
+          )}
           <ellipse className="m-cheek" cx="71.5" cy="44" rx="4" ry="2.3" />
           {asleep ? (
             <path className="m-eye-shut" d="M65.5 35.5q4 3.4 8 0" />
+          ) : mood === "cheering" ? (
+            // Eyes shut in a smile.
+            <path className="m-eye-shut" d="M65.5 35q4-3.6 8 0" />
+          ) : mood === "panic" ? (
+            <g className="m-eye wide">
+              <circle cx="69.5" cy="33.5" r="5" />
+              <circle className="m-eye-glint" cx="69.5" cy="33.5" r="1.7" />
+            </g>
           ) : (
             <g className="m-eye">
               <circle cx="69.5" cy="34" r="3.6" />
               <circle className="m-eye-glint" cx="70.8" cy="32.6" r="1.2" />
             </g>
           )}
+          {mood === "panic" && <path className="m-sweat" d="M54 24c2.2 3.2 3.4 5.4 3.4 7a3.4 3.4 0 0 1-6.8 0c0-1.6 1.2-3.8 3.4-7z" />}
           {asleep && (
             <g className="m-cap">
               <path d="M47.5 31.5C51 20 64 15.5 79 23.5c-9-12.5-29-15-37.5-8.2 2.4 4.6 4.3 9.7 6 16.2z" />
@@ -37,7 +58,7 @@ export function Mascot({ mood, size = 52 }: { mood: Mood; size?: number }) {
             </g>
           )}
         </g>
-        {!asleep && (
+        {pad && (
           <g className="m-pad">
             <rect x="57" y="61" width="31" height="15" rx="7.5" />
             <path className="m-pad-dpad" d="M63.2 66.6h2v-2h2v2h2v2h-2v2h-2v-2h-2z" />
@@ -57,6 +78,20 @@ export function Mascot({ mood, size = 52 }: { mood: Mood; size?: number }) {
           <text x="87" y="13">z</text>
           <text x="93" y="5">z</text>
         </g>
+      )}
+      {mood === "cheering" && (
+        <g className="m-confetti">
+          <rect x="18" y="14" width="4" height="7" rx="1" />
+          <rect x="34" y="4" width="4" height="7" rx="1" />
+          <rect x="86" y="10" width="4" height="7" rx="1" />
+          <circle cx="94" cy="26" r="2.4" />
+          <circle cx="26" cy="30" r="2.4" />
+        </g>
+      )}
+      {mood === "panic" && (
+        <text className="m-alarm" x="86" y="20">
+          !
+        </text>
       )}
     </svg>
   );

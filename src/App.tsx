@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, on, type Account, type Client, type Clients, type Friend, type Game, type Presence, type Server, type User } from "./api";
+import { api, on, type Account, type Client, type ClientFell, type Clients, type Friend, type Game, type Presence, type Server, type Settings, type Stats, type User } from "./api";
 import {
   ArrowUpIcon,
   CloseIcon,
@@ -13,6 +13,7 @@ import {
   PcIcon,
   PlayIcon,
   PlusIcon,
+  RejoinIcon,
   SearchIcon,
   ServerIcon,
   TrashIcon,
@@ -20,13 +21,18 @@ import {
 } from "./components/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
-import { Mascot } from "./components/Mascot";
+import { Mascot, type Mood } from "./components/Mascot";
 import { checkForUpdate, installUpdate, useUpdate } from "./update";
 import { notify, toast, Toasts } from "./toast";
 import { getLang, setLang, t as texts, useT, type Lang, type Texts } from "./i18n";
 import { errorNames } from "./errorCodes";
 
-const NO_CLIENTS: Clients = { clients: [], eco: [], others: 0 };
+const NO_CLIENTS: Clients = { clients: [], eco: [], rejoin: [], others: 0 };
+type VigiaSettings = Pick<Settings, "alertWindows" | "alertDiscord" | "discordWebhook" | "loginCheck">;
+const NO_VIGIA: VigiaSettings = { alertWindows: true, alertDiscord: false, discordWebhook: "", loginCheck: false };
+/** How long the duck panics after a drop, and cheers once every client is in. */
+const PANIC_MS = 8000;
+const CHEER_MS = 4000;
 
 const RECENTS_KEY = "quackblox.recents";
 const GAME_KEY = "quackblox.game";
@@ -61,6 +67,13 @@ const sameGame = (a: Game, b: Game) => a.placeId === b.placeId && a.jobId === b.
 const sameRecent = (a: Game, b: Game) => a.placeId === b.placeId && (a.linkCode ?? null) === (b.linkCode ?? null);
 /** What a Roblox error code means, or its official name when there is no text for it here. */
 const errorText = (code: number, t: Texts) => t.errors[code] ?? t.errorUnknown(code, errorNames[code]);
+/** The notice for a client that dropped, crashed or never got in, with what happens next. */
+function fellText(e: ClientFell, t: Texts) {
+  const what =
+    e.kind === "crashed" ? t.clientCrashed(e.name) : e.kind === "joinFailed" ? t.clientJoinFailed(e.name) : t.clientLeft(e.name, e.reason ? errorText(e.reason, t) : "");
+  const next = e.rejoinIn !== null ? t.rejoinIn(e.rejoinIn) : e.noRejoin ? t.noRejoin(e.noRejoin) : "";
+  return [what.trim(), next].filter(Boolean).join(" ");
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** RAM as Task Manager rounds it: MB below 1 GB, GB with one decimal above. */
@@ -95,6 +108,10 @@ export default function App() {
   const [autoClose, setAutoClose] = useState(true);
   const [stuck, setStuck] = useState(false);
   const [hotkeys, setHotkeys] = useState(true);
+  const [vigia, setVigia] = useState<VigiaSettings>(NO_VIGIA);
+  /** The name of the account that just dropped, while the duck panics. */
+  const [alarm, setAlarm] = useState<string | null>(null);
+  const [cheer, setCheer] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [clients, setClients] = useState<Clients>(NO_CLIENTS);
   const [presence, setPresence] = useState<Record<string, Presence>>({});
@@ -102,6 +119,7 @@ export default function App() {
   /** The accounts waiting for room in a full server, with how full it was at the last look. */
   const [waiting, setWaiting] = useState<Record<string, { playing: number; max: number }>>({});
   const [friendsOf, setFriendsOf] = useState<{ key: string; name: string } | null>(null);
+  const alarmTimer = useRef<number | undefined>(undefined);
   // Read by the listeners set up once: the names as they are now.
   const nameOf = useRef((key: string) => key);
   nameOf.current = (key) => (key === "app" ? appUser?.displayName : accounts.find((a) => String(a.id) === key)?.displayName) ?? "Roblox";
@@ -127,6 +145,7 @@ export default function App() {
     api.settings().then((s) => {
       setAutoClose(s.autoClose);
       setHotkeys(s.hotkeys);
+      setVigia(s);
     });
     api.clients().then(setClients);
     loadAccounts();
@@ -148,11 +167,15 @@ export default function App() {
       }),
       on.accountError(toast),
       on.clients(setClients),
-      // Why a client left, from its log. Leaving on purpose (285) needs no notice.
-      on.clientExited((e) => {
-        if (e.reason === null || e.reason === 285) return;
-        toast(texts().clientLeft(nameOf.current(e.account), errorText(e.reason, texts())));
+      // A drop, a crash or a join that never happened (vigia.rs). Leaving on purpose is none.
+      on.clientFell((e) => {
+        toast(fellText(e, texts()));
+        setAlarm(e.name);
+        clearTimeout(alarmTimer.current);
+        alarmTimer.current = window.setTimeout(() => setAlarm(null), PANIC_MS);
       }),
+      on.clientRejoin((e) => (e.error ? toast(texts().rejoinFailed(e.name, e.error)) : notify(texts().rejoined(e.name), "info"))),
+      on.accountsChanged(loadAccounts),
       on.hotkeysFailed((keys) => toast(texts().hotkeysFailed(keys))),
     ];
     // Read only once every listener is in, so nothing that happens in between is missed. A
@@ -365,7 +388,7 @@ export default function App() {
     if (l === before) return;
     setLang(l);
     api
-      .setSettings({ autoClose, language: l, hotkeys })
+      .setSettings({ autoClose, language: l, hotkeys, ...vigia })
       .then((s) => setLang(s.language))
       .catch((e) => {
         setLang(before);
@@ -374,15 +397,20 @@ export default function App() {
   };
 
   // The window sends every setting each time (settings.rs): the ones not changing go as they are.
-  const saveSettings = (change: { autoClose?: boolean; hotkeys?: boolean }) => {
+  const saveSettings = (change: Partial<Omit<Settings, "language">>) => {
     setSavingSettings(true);
-    api
-      .setSettings({ autoClose, hotkeys, language: getLang(), ...change })
+    return api
+      .setSettings({ autoClose, hotkeys, ...vigia, language: getLang(), ...change })
       .then((s) => {
         setAutoClose(s.autoClose);
         setHotkeys(s.hotkeys);
+        setVigia(s);
+        return true;
       })
-      .catch(toast)
+      .catch((e) => {
+        toast(e);
+        return false;
+      })
       .finally(() => setSavingSettings(false));
   };
 
@@ -394,6 +422,11 @@ export default function App() {
     setClients((c) => ({ ...c, eco: on ? [...c.eco, key] : c.eco.filter((k) => k !== key) }));
     api.setEco(key, on).then(setClients).catch(toast);
   };
+  const toggleRejoin = (key: string) => {
+    const on = !clients.rejoin.includes(key);
+    setClients((c) => ({ ...c, rejoin: on ? [...c.rejoin, key] : c.rejoin.filter((k) => k !== key) }));
+    api.setRejoin(key, on).then(setClients).catch(toast);
+  };
   /** `place`: the saved account's place, from 0, for its Ctrl+Shift number; none for the app's. */
   const live = (key: string, place?: number) => ({
     presence: presence[key],
@@ -402,6 +435,8 @@ export default function App() {
     clients: clientsOf(key),
     eco: clients.eco.includes(key),
     onEco: () => toggleEco(key),
+    rejoin: clients.rejoin.includes(key),
+    onRejoin: () => toggleRejoin(key),
     onFocus: () => api.focusClient(key).catch(toast),
     hotkey: hotkeys && place !== undefined && place < 9 ? place + 1 : undefined,
   });
@@ -455,6 +490,25 @@ export default function App() {
 
   const playable = (appUser ? 1 : 0) + accounts.filter((a) => !a.expired && a.id !== appUser?.id).length;
 
+  // The duck cheers once every client open is inside a game (from one that was not), and panics
+  // after a drop or while a client sits on Roblox's error dialog.
+  const inGame = clients.clients.filter((c) => c.state === "inGame").length;
+  const allIn = inGame > 0 && inGame === clients.clients.length;
+  const wasAllIn = useRef(allIn);
+  useEffect(() => {
+    if (allIn && !wasAllIn.current) {
+      setCheer(true);
+      const timer = setTimeout(() => setCheer(false), CHEER_MS);
+      wasAllIn.current = allIn;
+      return () => clearTimeout(timer);
+    }
+    wasAllIn.current = allIn;
+  }, [allIn]);
+  const downName = clients.clients.find((c) => c.state === "dropped" || c.state === "joinFailed");
+  const panicName = alarm ?? (downName ? nameOf.current(downName.account) : null);
+  const mood: Mood = panicName ? "panic" : cheer ? "cheering" : windowsOpen ? "playing" : "sleeping";
+  const moodText = panicName ? t.mascotPanic(panicName) : cheer ? t.mascotCheering : windowsOpen ? t.mascotPlaying(windowsOpen) : t.mascotSleeping;
+
   return (
     <>
       <div className="aura" aria-hidden>
@@ -465,10 +519,10 @@ export default function App() {
       <div className="app">
         <header className="topbar">
           <div className="brand">
-            <Mascot key={windowsOpen ? "playing" : "sleeping"} mood={windowsOpen ? "playing" : "sleeping"} size={50} />
+            <Mascot key={mood} mood={mood} size={50} />
             <div className="brand-text">
               <span className="brand-name">Quackblox</span>
-              <span className="brand-mood">{windowsOpen ? t.mascotPlaying(windowsOpen) : t.mascotSleeping}</span>
+              <span className={`brand-mood ${mood}`}>{moodText}</span>
             </div>
           </div>
           <MultiPill active={multi} autoClose={autoClose} stuck={stuck} />
@@ -559,6 +613,8 @@ export default function App() {
             </div>
           </section>
 
+          <VigiaBlock settings={vigia} saving={savingSettings} onSave={saveSettings} />
+          <StatsBlock accounts={accounts} appUser={appUser} />
           <ErrorLookup />
         </main>
 
@@ -792,6 +848,9 @@ function AccountCard(p: {
   clients: Client[];
   eco: boolean;
   onEco: () => void;
+  /** Goes back in by itself when it drops. */
+  rejoin: boolean;
+  onRejoin: () => void;
   onFocus: () => void;
   /** N of its Ctrl+Shift+N, when the hotkeys are on. */
   hotkey?: number;
@@ -866,6 +925,9 @@ function AccountCard(p: {
             <PlayIcon size={16} /> {p.busy ? t.opening : t.play}
           </button>
         )}
+        <button className={`round-btn rejoin-btn ${p.rejoin ? "on" : ""}`} onClick={p.onRejoin} title={p.rejoin ? t.rejoinOn : t.rejoinOff} aria-label={t.rejoinLabel} aria-pressed={p.rejoin}>
+          <RejoinIcon size={16} />
+        </button>
         <button className={`round-btn eco-btn ${p.eco ? "on" : ""}`} onClick={p.onEco} title={p.eco ? t.ecoOn : t.ecoOff} aria-label={t.ecoLabel} aria-pressed={p.eco}>
           <LeafIcon size={16} />
         </button>
@@ -880,10 +942,22 @@ function LiveLine({ clients, onFocus }: { clients: Client[]; onFocus: () => void
   const cpu = clients.reduce((n, c) => n + c.cpu, 0);
   const ram = clients.reduce((n, c) => n + c.ram, 0);
   const shown = clients.some((c) => c.window);
+  // The worst state among its clients names the line: one dropped is what he needs to see.
+  const down = clients.find((c) => c.state === "dropped") ?? clients.find((c) => c.state === "joinFailed");
+  const starting = !down && clients.some((c) => c.state === "starting");
+  const label = down
+    ? down.state === "dropped"
+      ? t.stateDropped(down.reason)
+      : t.stateJoinFailed
+    : starting
+      ? t.stateStarting
+      : clients.length > 1
+        ? t.openMany(clients.length)
+        : t.stateInGame;
   return (
-    <button className={`live-line ${shown ? "" : "starting"}`} onClick={onFocus} disabled={!shown} title={t.focusWindow}>
+    <button className={`live-line ${down ? "down" : starting || !shown ? "starting" : ""}`} onClick={onFocus} disabled={!shown} title={t.focusWindow}>
       <span className="live-dot" />
-      <span className="live-label">{clients.length > 1 ? t.openMany(clients.length) : t.openOne}</span>
+      <span className="live-label">{label}</span>
       <span className="live-stats">
         <span className="live-stat">
           CPU <b>{cpu < 10 ? cpu.toFixed(1) : Math.round(cpu)}%</b>
@@ -1099,6 +1173,157 @@ function ErrorLookup() {
       </label>
       <input id="error-code" value={code} inputMode="numeric" placeholder={t.errorPlaceholder} onChange={(e) => setCode(e.target.value)} />
       {n > 0 && <span className="small">{errorText(n, t)}</span>}
+    </section>
+  );
+}
+
+/** What to do when an account drops: the notices, and the login check. */
+function VigiaBlock({ settings, saving, onSave }: { settings: VigiaSettings; saving: boolean; onSave: (change: Partial<VigiaSettings>) => Promise<boolean> }) {
+  const t = useT();
+  const [webhook, setWebhook] = useState(settings.discordWebhook);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => setWebhook(settings.discordWebhook), [settings.discordWebhook]);
+  const typed = webhook.trim();
+  const checkNow = () => {
+    setChecking(true);
+    api
+      .checkLogins()
+      .then((names) => (names.length ? toast(t.loginsExpired(names.join(", "))) : notify(t.loginsFine, "info")))
+      .catch(toast)
+      .finally(() => setChecking(false));
+  };
+  return (
+    <section className="block vigia">
+      <div className="block-head">
+        <h2>{t.vigiaTitle}</h2>
+        <span className="muted small">{t.vigiaHint}</span>
+      </div>
+      <div className="vigia-rows">
+        <div className="vigia-row">
+          <label className="footer-toggle">
+            <Toggle on={settings.alertWindows} disabled={saving} onChange={(v) => onSave({ alertWindows: v })} />
+            {t.alertWindows}
+          </label>
+          <button className="pill-btn ghost small" onClick={() => api.testWindows().catch(toast)}>
+            {t.test}
+          </button>
+        </div>
+        <div className="vigia-row">
+          <label className="footer-toggle" title={t.alertDiscordTitle}>
+            <Toggle
+              on={settings.alertDiscord}
+              disabled={saving}
+              onChange={(v) => onSave(v && typed !== settings.discordWebhook ? { alertDiscord: v, discordWebhook: typed } : { alertDiscord: v })}
+            />
+            {t.alertDiscord}
+          </label>
+        </div>
+        <form
+          className="job-paste webhook"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSave({ discordWebhook: typed, alertDiscord: typed ? settings.alertDiscord : false }).then((ok) => ok && notify(t.webhookSaved, "info"));
+          }}
+        >
+          <input type="password" value={webhook} placeholder={t.webhookPlaceholder} onChange={(e) => setWebhook(e.target.value)} spellCheck={false} autoComplete="off" />
+          <button className="pill-btn ghost small" type="button" disabled={!typed} onClick={() => api.testDiscord(typed).then(() => notify(t.testSent, "info")).catch(toast)}>
+            {t.test}
+          </button>
+          <button className="pill-btn small" disabled={saving || typed === settings.discordWebhook}>
+            {t.webhookSave}
+          </button>
+        </form>
+        <div className="vigia-row">
+          <label className="footer-toggle" title={t.loginCheckTitle}>
+            <Toggle on={settings.loginCheck} disabled={saving} onChange={(v) => onSave({ loginCheck: v })} />
+            {t.loginCheck}
+          </label>
+          <button className="pill-btn ghost small" disabled={checking} onClick={checkNow}>
+            {checking ? t.checking2 : t.checkNow}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Hours inside a game per account and per game, the most played first. */
+function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User | null }) {
+  const t = useT();
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [confirm, setConfirm] = useState(false);
+  const asked = useRef(new Set<string>());
+  useEffect(() => {
+    const load = () => document.visibilityState === "visible" && api.stats().then(setStats).catch(() => {});
+    load();
+    const timer = setInterval(load, 60000);
+    return () => clearInterval(timer);
+  }, []);
+  // Each game's name, asked once.
+  useEffect(() => {
+    if (!stats) return;
+    const places = [...new Set(Object.values(stats.users).flatMap((p) => Object.keys(p)))].filter((id) => !asked.current.has(id));
+    places.forEach((id) => {
+      asked.current.add(id);
+      api
+        .game(id)
+        .then((g) => setNames((n) => ({ ...n, [id]: g.name })))
+        .catch(() => {});
+    });
+  }, [stats]);
+  useEffect(() => {
+    if (!confirm) return;
+    const timer = setTimeout(() => setConfirm(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirm]);
+  if (!stats) return null;
+  const who = (id: string) => accounts.find((a) => String(a.id) === id)?.displayName ?? (appUser && String(appUser.id) === id ? appUser.displayName : `#${id}`);
+  const rows = Object.entries(stats.users)
+    .map(([id, places]) => {
+      const games = Object.entries(places).sort((a, b) => b[1] - a[1]);
+      return { id, games, total: games.reduce((n, [, secs]) => n + secs, 0) };
+    })
+    .filter((r) => r.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const since = new Date(stats.since * 1000).toLocaleDateString(getLang() === "en" ? "en" : "pt-BR");
+  return (
+    <section className="block stats">
+      <div className="block-head">
+        <h2>{t.statsTitle}</h2>
+        <span className="muted small">{t.statsHint(since)}</span>
+        {rows.length > 0 && (
+          <button
+            className="pill-btn ghost small"
+            onClick={() => {
+              if (!confirm) return setConfirm(true);
+              setConfirm(false);
+              api.resetStats().then(setStats).catch(toast);
+            }}
+          >
+            {confirm ? t.statsResetConfirm : t.statsReset}
+          </button>
+        )}
+      </div>
+      {rows.length === 0 ? (
+        <span className="muted small">{t.statsEmpty}</span>
+      ) : (
+        <div className="stats-list">
+          {rows.map((r) => (
+            <div key={r.id} className="stats-row">
+              <span className="stats-name">{who(r.id)}</span>
+              <span className="stats-total">{t.hours(r.total)}</span>
+              <span className="stats-games muted small">
+                {r.games
+                  .slice(0, 3)
+                  .map(([place, secs]) => `${names[place] ?? place} ${t.hours(secs)}`)
+                  .join(" · ")}
+                {r.games.length > 3 && ` · ${t.statsOthers(r.games.length - 3)}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

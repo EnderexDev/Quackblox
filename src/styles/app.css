@@ -842,6 +842,83 @@
   animation: pulse 1.6s ease-in-out infinite;
 }
 
+/* Dropped, or never got in: red, the error dialog is on screen. */
+.live-line.down {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.live-line.down:not(:disabled):hover {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+}
+
+.live-line.down .live-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.rejoin-btn.on {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+.rejoin-btn.on:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--accent);
+}
+
+/* ---- Watch (vigia) and hours played ---- */
+
+.vigia-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.vigia-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.job-paste.webhook {
+  margin-top: -2px;
+}
+
+.stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: minmax(90px, max-content) max-content 1fr;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.stats-name {
+  font-weight: 700;
+}
+
+.stats-total {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-games {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .live-label {
   margin-right: auto;
   white-space: nowrap;

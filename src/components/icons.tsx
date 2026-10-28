@@ -107,6 +107,14 @@ export const LeafIcon = (p: P) => (
   </Icon>
 );
 
+/** Rejoin: going round back into the game. */
+export const RejoinIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" />
+    <path d="M19.5 4.5v4.2h-4.2" />
+  </Icon>
+);
+
 export const GridIcon = (p: P) => (
   <Icon {...p}>
     <rect x="4" y="4" width="7" height="7" rx="1.6" />

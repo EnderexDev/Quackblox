@@ -56,6 +56,23 @@ pub async fn user_of(cookie: &str) -> Result<User, String> {
     Ok(User { id: raw.id, name: raw.name, display_name: raw.display_name })
 }
 
+/// Whether Roblox still takes a login, and its newer value when Roblox rotated it in the answer.
+/// An error when Roblox could not say (no connection, a refusal that is not 401).
+pub async fn login_alive(cookie: &str) -> Result<(bool, Option<String>), String> {
+    let res = client()
+        .get("https://users.roblox.com/v1/users/authenticated")
+        .header(COOKIE, cookie_header(cookie)?)
+        .send()
+        .await
+        .map_err(|e| tr!("sem conexão com o Roblox: {e}", "no connection to Roblox: {e}"))?;
+    let newer = rotated(res.headers());
+    match res.status().as_u16() {
+        401 => Ok((false, newer)),
+        s if (200..300).contains(&s) => Ok((true, newer)),
+        s => Err(tr!("o Roblox recusou agora (HTTP {s})", "Roblox refused right now (HTTP {s})")),
+    }
+}
+
 /// Avatar headshots by user id, as image URLs (a missing one is left out).
 pub async fn headshots(ids: &[u64]) -> Vec<(u64, String)> {
     if ids.is_empty() {

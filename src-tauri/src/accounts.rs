@@ -292,6 +292,45 @@ pub struct Joined {
     job_id: String,
 }
 
+/// Asks Roblox whether each saved login still works, 2 s apart, and marks the ones it refuses as
+/// expired. A login Roblox rotated in the answer is kept. Says the names of the ones that expired
+/// now (an account already marked is not told again).
+pub async fn check_logins(app: &AppHandle) -> Vec<String> {
+    let store = app.state::<Store>();
+    let ids: Vec<u64> = store.list.lock().unwrap().iter().filter(|s| !s.expired).map(|s| s.id).collect();
+    let mut expired = vec![];
+    for (i, id) in ids.into_iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        let Ok(login) = store.login_of(id) else { continue };
+        let Ok((alive, newer)) = roblox::login_alive(&login).await else { continue };
+        let newer = newer.and_then(|c| win::protect(c.as_bytes()).ok()).map(|b| B64.encode(b));
+        let mut name = None;
+        let saved = store.update(|list| {
+            if let Some(s) = list.iter_mut().find(|s| s.id == id) {
+                if let Some(login) = newer {
+                    s.login = login;
+                }
+                if !alive {
+                    s.expired = true;
+                    name = Some(s.display_name.clone());
+                }
+            }
+        });
+        if let Err(e) = saved {
+            eprintln!("accounts: login check not saved: {e}");
+        }
+        expired.extend(name);
+    }
+    expired
+}
+
+/// The saved account's key for a Roblox user, when it is saved.
+pub fn saved_key(app: &AppHandle, user: u64) -> Option<String> {
+    app.state::<Store>().list.lock().unwrap().iter().any(|s| s.id == user && !s.expired).then(|| user.to_string())
+}
+
 /// The server the account's newest client joined, from its log; none until it has joined.
 #[tauri::command]
 pub fn client_server(app: AppHandle, account: String) -> Option<Joined> {
@@ -458,7 +497,7 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
     };
     let user = saved_id.or(app_user.as_ref().map(|u| u.id));
     match process {
-        Some(p) => app.state::<clients::Clients>().add(p, &account, name.as_deref().unwrap_or("Roblox"), user),
+        Some(p) => app.state::<clients::Clients>().add(p, &account, name.as_deref().unwrap_or("Roblox"), user, &game),
         None => eprintln!("accounts: the link opened no process of its own, the client is not tied to {account}"),
     }
     if let Some(id) = saved_id {

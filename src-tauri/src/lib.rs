@@ -16,6 +16,8 @@ mod multi;
 mod roblox;
 mod settings;
 mod setup;
+mod stats;
+mod vigia;
 mod win;
 
 use tauri::Manager;
@@ -32,6 +34,7 @@ pub fn run() {
         // First: a second launch only brings this window back.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_window(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             app.manage(accounts::Store::load(app.handle()));
             // Before the multi, which reads auto_close.
@@ -39,6 +42,7 @@ pub fn run() {
             multi::start(app.handle().clone());
             clients::start(app.handle());
             hotkeys::start(app.handle().clone());
+            vigia::start(app.handle().clone());
             desktop::setup(app)?;
             Ok(())
         })
@@ -64,6 +68,12 @@ pub fn run() {
             accounts::client_server,
             clients::clients_get,
             clients::clients_set_eco,
+            clients::clients_set_rejoin,
+            vigia::vigia_test_discord,
+            vigia::vigia_test_windows,
+            vigia::vigia_check_logins,
+            stats::stats_get,
+            stats::stats_reset,
             clients::clients_focus,
             clients::clients_minimize_others,
             clients::clients_grid,
