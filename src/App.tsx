@@ -1259,6 +1259,7 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
   const [names, setNames] = useState<Record<string, string>>({});
   const [confirm, setConfirm] = useState(false);
   const asked = useRef(new Set<string>());
+  const failed = useRef(new Map<string, number>());
   useEffect(() => {
     const load = () => document.visibilityState === "visible" && api.stats().then(setStats).catch(() => {});
     load();
@@ -1280,8 +1281,13 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
       api
         .game(id)
         .then((g) => setNames((n) => ({ ...n, [id]: g.name })))
-        // Asked again at the next reload (a minute): a refusal at the start is not for ever.
-        .catch(() => asked.current.delete(id));
+        // Asked again at the next reload (a minute), 3 times at most: a refusal at the start is
+        // not for ever, and a game gone for good is not asked every minute.
+        .catch(() => {
+          const n = (failed.current.get(id) ?? 0) + 1;
+          failed.current.set(id, n);
+          if (n < 3) asked.current.delete(id);
+        });
     });
   }, [stats]);
   useEffect(() => {
