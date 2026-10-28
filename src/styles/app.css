@@ -877,3 +877,20 @@
     margin-left: 0;
   }
 }
+
+/* ---- Dragging a saved account's card to another place ---- */
+
+.card.movable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.card.dragging {
+  cursor: grabbing;
+  position: relative;
+  z-index: 2;
+  transform: scale(1.03);
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: var(--shadow-popup);
+  animation: none;
+}

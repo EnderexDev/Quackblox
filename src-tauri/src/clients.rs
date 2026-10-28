@@ -495,15 +495,16 @@ fn all_windows(app: &AppHandle) -> Vec<HWND> {
     out
 }
 
-/// The main client: the Roblox app account's, or else the first open in card order.
+/// The main client: the first open in card order (the Roblox app's account comes last).
 fn principal(app: &AppHandle) -> Option<HWND> {
     let clients = app.state::<Clients>();
     crate::accounts::order(app).iter().find_map(|a| clients.windows_of(a).into_iter().next())
 }
 
-/// Focuses the client of the account on card N (1 is the Roblox app's card). Used by a hotkey.
+/// Focuses the client of the saved account N, in card order. Used by a hotkey; the Roblox app's
+/// account has no number, since it changes with whoever is logged in to Roblox.
 pub fn focus_nth(app: &AppHandle, n: usize) {
-    let order = crate::accounts::order(app);
+    let order = crate::accounts::saved_order(app);
     if let Some(w) = order.get(n.wrapping_sub(1)).and_then(|a| app.state::<Clients>().windows_of(a).into_iter().next()) {
         focus(w);
     }

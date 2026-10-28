@@ -30,7 +30,7 @@ const pt = {
 
   // Accounts
   accountsTitle: "Contas",
-  accountsHint: "Cada uma abre num Roblox separado.",
+  accountsHint: "Cada uma abre num Roblox separado. Segura e arrasta pra mudar a ordem.",
   playAll: "Jogar com todas",
   playAllTitle: "Abre uma por vez, com 3 segundos entre elas",
   robloxApp: "App do Roblox",
@@ -84,7 +84,7 @@ const pt = {
   autoClose: "Fechar sozinho o Roblox que trava o multi",
   autoCloseTitle: "Quando um Roblox aberto antes do Quackblox trava o multi, ele é fechado sozinho",
   hotkeys: "Atalhos Ctrl+Shift",
-  hotkeysTitle: "Ctrl+Shift+1 a 9 traz pra frente o Roblox da conta naquela posição; Ctrl+Shift+0 minimiza todas menos a principal",
+  hotkeysTitle: "Ctrl+Shift+1 a 9 traz pra frente o Roblox da conta salva naquela posição; Ctrl+Shift+0 minimiza todas menos a principal",
   hotkeysFailed: (keys: string) => `Outro programa já usa ${keys}. Esses atalhos ficaram de fora`,
   trayTitle: "Fechar a janela deixa o Quackblox na bandeja, com o multi ligado.",
   updateTo: (v: string) => `Atualizar pro ${v}`,
@@ -147,7 +147,7 @@ const en: Texts = {
   forgetRecent: (name) => `Remove ${name} from recent`,
 
   accountsTitle: "Accounts",
-  accountsHint: "Each one opens in its own Roblox.",
+  accountsHint: "Each one opens in its own Roblox. Hold and drag to change the order.",
   playAll: "Play with all",
   playAllTitle: "Opens one at a time, 3 seconds apart",
   robloxApp: "Roblox app",
@@ -197,7 +197,7 @@ const en: Texts = {
   autoClose: "Close the Roblox that blocks the multi on its own",
   autoCloseTitle: "When a Roblox opened before Quackblox blocks the multi, it gets closed on its own",
   hotkeys: "Ctrl+Shift hotkeys",
-  hotkeysTitle: "Ctrl+Shift+1 to 9 brings forward the Roblox of the account in that spot; Ctrl+Shift+0 minimizes all but the main one",
+  hotkeysTitle: "Ctrl+Shift+1 to 9 brings forward the Roblox of the saved account in that spot; Ctrl+Shift+0 minimizes all but the main one",
   hotkeysFailed: (keys) => `Another program already uses ${keys}. Those hotkeys were left out`,
   trayTitle: "Closing the window keeps Quackblox in the tray, with the multi on.",
   updateTo: (v) => `Update to ${v}`,

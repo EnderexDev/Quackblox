@@ -265,12 +265,59 @@ export default function App() {
     setClients((c) => ({ ...c, eco: on ? [...c.eco, key] : c.eco.filter((k) => k !== key) }));
     api.setEco(key, on).then(setClients).catch(toast);
   };
-  const live = (key: string, index: number) => ({
+  /** `place`: the saved account's place, from 0, for its Ctrl+Shift number; none for the app's. */
+  const live = (key: string, place?: number) => ({
     clients: clientsOf(key),
     eco: clients.eco.includes(key),
     onEco: () => toggleEco(key),
     onFocus: () => api.focusClient(key).catch(toast),
-    hotkey: hotkeys && index < 9 ? index + 1 : undefined,
+    hotkey: hotkeys && place !== undefined && place < 9 ? place + 1 : undefined,
+  });
+
+  // Hold and drag a saved account's card to give it another place. The list moves under the
+  // pointer while it is held, and the new place is saved when it is let go.
+  const drag = useRef<{ id: number; x: number; y: number; moved: boolean } | null>(null);
+  const [dragId, setDragId] = useState<number | null>(null);
+  const dragHandlers = (a: Account) => ({
+    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+      // The card's own buttons keep their clicks.
+      if (e.button !== 0 || (e.target as HTMLElement).closest("button, .menu")) return;
+      drag.current = { id: a.id, x: e.clientX, y: e.clientY, moved: false };
+      e.currentTarget.setPointerCapture(e.pointerId);
+    },
+    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
+      const d = drag.current;
+      if (!d) return;
+      if (!d.moved) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
+        d.moved = true;
+        setDragId(d.id);
+      }
+      const over = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-account]");
+      const overId = over ? Number(over.dataset.account) : null;
+      if (overId === null || overId === d.id) return;
+      setAccounts((list) => {
+        const from = list.findIndex((x) => x.id === d.id);
+        const to = list.findIndex((x) => x.id === overId);
+        if (from < 0 || to < 0) return list;
+        const next = [...list];
+        next.splice(to, 0, ...next.splice(from, 1));
+        return next;
+      });
+    },
+    onPointerUp: () => {
+      const d = drag.current;
+      drag.current = null;
+      setDragId(null);
+      if (!d?.moved) return;
+      const to = accounts.findIndex((x) => x.id === d.id);
+      api.moveAccount(d.id, Math.max(0, to)).catch(toast).finally(loadAccounts);
+    },
+    onPointerCancel: () => {
+      drag.current = null;
+      setDragId(null);
+      loadAccounts();
+    },
   });
 
   const playable = (appUser ? 1 : 0) + accounts.filter((a) => !a.expired && a.id !== appUser?.id).length;
@@ -340,7 +387,7 @@ export default function App() {
                 busy={busy.has("app")}
                 canPlay={!!game && !!appUser}
                 onPlay={() => appUser && play("app", appUser.displayName)}
-                {...live("app", 0)}
+                {...live("app")}
               />
               {accounts.map((a, i) => (
                 <AccountCard
@@ -353,7 +400,10 @@ export default function App() {
                   canPlay={!!game && !a.expired}
                   onPlay={() => play(String(a.id), a.displayName)}
                   onRelogin={a.expired ? () => api.addAccount().catch(toast) : undefined}
-                  {...live(String(a.id), i + 1)}
+                  {...live(String(a.id), i)}
+                  dragId={a.id}
+                  dragging={dragId === a.id}
+                  dragHandlers={dragHandlers(a)}
                   menu={[
                     ...(i > 0 ? [{ icon: <ArrowUpIcon size={16} />, label: t.moveUp, run: () => moveUp(a, i) }] : []),
                     { icon: <TrashIcon size={16} />, label: t.removeAccount, run: () => remove(a), danger: true },
@@ -573,6 +623,10 @@ function AccountCard(p: {
   onFocus: () => void;
   /** N of its Ctrl+Shift+N, when the hotkeys are on. */
   hotkey?: number;
+  /** A saved account's card can be dragged to another place. */
+  dragId?: number;
+  dragging?: boolean;
+  dragHandlers?: React.HTMLAttributes<HTMLDivElement>;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -585,10 +639,14 @@ function AccountCard(p: {
   }, [open]);
 
   return (
-    <div className={`card account ${p.missing ? "missing" : ""}`}>
+    <div
+      className={`card account ${p.missing ? "missing" : ""} ${p.dragHandlers ? "movable" : ""} ${p.dragging ? "dragging" : ""}`}
+      data-account={p.dragId}
+      {...p.dragHandlers}
+    >
       <div className="account-top">
         <span className="avatar-wrap">
-          {p.avatar ? <img className="avatar" src={p.avatar} alt="" /> : <span className="avatar empty" />}
+          {p.avatar ? <img className="avatar" src={p.avatar} alt="" draggable={false} /> : <span className="avatar empty" />}
           {p.hotkey && (
             <span className="hotkey-chip" title={t.hotkeyChip(p.hotkey)}>
               {p.hotkey}

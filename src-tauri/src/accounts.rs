@@ -153,11 +153,17 @@ pub async fn app_account() -> Result<roblox::User, String> {
     Ok(user)
 }
 
-/// The account keys in the order of the cards: the Roblox app's first, then the saved ones.
+/// The saved accounts' keys, in the order he gave the cards.
+pub fn saved_order(app: &AppHandle) -> Vec<String> {
+    app.state::<Store>().list.lock().unwrap().iter().map(|s| s.id.to_string()).collect()
+}
+
+/// Every account key: the saved ones in card order, the Roblox app's last. The app's account is
+/// whatever is logged in to Roblox at the moment, so it never comes ahead of his own order.
 pub fn order(app: &AppHandle) -> Vec<String> {
-    let store = app.state::<Store>();
-    let list = store.list.lock().unwrap();
-    std::iter::once("app".to_string()).chain(list.iter().map(|s| s.id.to_string())).collect()
+    let mut keys = saved_order(app);
+    keys.push("app".into());
+    keys
 }
 
 #[tauri::command]

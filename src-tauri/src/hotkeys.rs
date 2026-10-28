@@ -1,5 +1,6 @@
-// Global hotkeys: Ctrl+Shift+1 to 9 bring the client of the account on that card forward (1 is
-// the Roblox app's card), Ctrl+Shift+0 minimizes every Roblox but the main one. Not Ctrl+Alt:
+// Global hotkeys: Ctrl+Shift+1 to 9 bring forward the client of the saved account in that place
+// (the Roblox app's account has none: it changes with whoever is logged in), Ctrl+Shift+0
+// minimizes every Roblox but the main one. Not Ctrl+Alt:
 // on a Brazilian ABNT2 keyboard AltGr is Ctrl+Alt, and AltGr+1 types ¹. Each key acts on one
 // window only; nothing is ever sent to the game.
 use std::sync::atomic::{AtomicU32, Ordering};
