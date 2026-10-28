@@ -1,0 +1,249 @@
+/* The installer window (Setup.tsx), copied from Quackify: a yellow aura in a small frameless
+   window, a bar to drag it by, the duck in the middle. */
+
+.setup {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 42%, color-mix(in srgb, var(--accent) 26%, transparent) 0, transparent 70%),
+    var(--bg);
+  user-select: none;
+}
+
+.setup-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 8px 0 16px;
+  flex-shrink: 0;
+}
+
+.setup-bar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.setup-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.setup-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.setup-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 40px 32px;
+  text-align: center;
+  animation: page-in var(--t-slow) var(--ease-out);
+}
+
+/* The duck: still while it waits, inside the splash's turning ring while it works, a hop when done. */
+.setup-duck {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  margin-bottom: 4px;
+  color: var(--accent);
+  filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.35));
+}
+
+.setup-duck.busy::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: spin 1.2s linear infinite;
+}
+
+.setup-duck.done {
+  animation: setup-hop 600ms var(--ease-spring);
+}
+
+@keyframes setup-hop {
+  40% {
+    transform: translateY(-12px) scale(1.06);
+  }
+}
+
+.setup h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--text);
+}
+
+.setup-line {
+  margin: 0;
+  max-width: 400px;
+  min-height: 20px;
+  font-size: 13px;
+}
+
+.setup-line.error {
+  color: var(--danger);
+  user-select: text;
+}
+
+/* The bar: the real share while downloading; a sliding band while NSIS installs, which says nothing. */
+.setup-progress {
+  position: relative;
+  width: 320px;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.setup-progress i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 60%, transparent);
+  transition: width var(--t-mid) var(--ease-out);
+}
+
+.setup-progress.endless i {
+  width: 35%;
+  animation: setup-slide 1.4s var(--ease-out) infinite;
+}
+
+@keyframes setup-slide {
+  from {
+    left: -35%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.setup-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.setup-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 8px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--glass);
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+
+.setup-option > span:first-child {
+  flex: 1;
+}
+
+.setup-option svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.setup-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.setup-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  min-height: 48px;
+}
+
+.setup-actions .primary {
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-body,
+  .setup-duck.done {
+    animation: none;
+  }
+}
+
+/* From Quackify's other sheets, which the installer window leans on. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.primary {
+  height: 48px;
+  padding: 0 28px;
+  border-radius: 24px;
+  font-weight: 700;
+  font-size: 15px;
+  background: var(--accent);
+  color: var(--on-accent);
+  transition: transform var(--t-fast), background var(--t-fast);
+}
+
+.primary:not(:disabled):hover {
+  background: var(--accent-2);
+  transform: scale(1.03);
+}
+
+.pill-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pill-button:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}

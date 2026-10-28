@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "setup",
+  "description": "Capability for the installer window (setup.rs)",
+  "windows": ["setup"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
+}

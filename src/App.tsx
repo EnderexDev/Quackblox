@@ -13,6 +13,7 @@ import {
   TrashIcon,
   UsersIcon,
 } from "./components/icons";
+import { Toggle } from "./components/Toggle";
 import { notify, toast, Toasts } from "./toast";
 
 const RECENTS_KEY = "quackblox.recents";
@@ -328,14 +329,6 @@ function MultiPill({ active, autoClose, stuck }: { active: boolean | null; autoC
         </button>
       )}
     </div>
-  );
-}
-
-function Toggle({ on, onChange, disabled = false }: { on: boolean; onChange: (on: boolean) => void; disabled?: boolean }) {
-  return (
-    <button role="switch" aria-checked={on} className={`toggle ${on ? "on" : ""}`} disabled={disabled} onClick={() => onChange(!on)}>
-      <span className="toggle-knob" />
-    </button>
   );
 }
 

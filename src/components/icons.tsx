@@ -87,6 +87,12 @@ export const PcIcon = (p: P) => (
   </Icon>
 );
 
+export const FolderIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M3.5 7.4a1.9 1.9 0 0 1 1.9-1.9h3.7l2 2h7.5a1.9 1.9 0 0 1 1.9 1.9v8.2a1.9 1.9 0 0 1-1.9 1.9H5.4a1.9 1.9 0 0 1-1.9-1.9z" />
+  </Icon>
+);
+
 export const UsersIcon = (p: P) => (
   <Icon {...p}>
     <circle cx="9" cy="8.5" r="3.5" />

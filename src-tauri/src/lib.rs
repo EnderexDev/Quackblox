@@ -4,12 +4,18 @@ mod desktop;
 mod multi;
 mod roblox;
 mod settings;
+mod setup;
 mod win;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    // Quackblox-Setup.exe: the installer window instead of the app.
+    if let Some(payload) = setup::payload() {
+        return setup::run(context, payload);
+    }
     tauri::Builder::default()
         // First: a second launch only brings this window back.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_window(app)))
@@ -38,6 +44,6 @@ pub fn run() {
             desktop::startup_get,
             desktop::startup_set,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
