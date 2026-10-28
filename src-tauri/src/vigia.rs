@@ -78,6 +78,11 @@ fn tries_key(account: &str, user: Option<u64>) -> String {
 /// elsewhere (264, 273, 276: going back in would knock that session out), a kick or ban by the
 /// game or by Roblox, a blocked network, an outdated client.
 fn rejoinable(reason: Option<u32>) -> bool {
+    // Tests of a rejoin from a live drop with the one drop that can be made on purpose (the same
+    // account opened twice, 276). Dev builds only.
+    if cfg!(debug_assertions) && std::env::var_os("QUACKBLOX_REJOIN_ANY").is_some() {
+        return reason != Some(285);
+    }
     !matches!(reason, Some(5 | 264 | 267 | 273 | 276 | 280 | 282 | 285 | 287 | 291 | 309 | 600))
 }
 

@@ -495,15 +495,17 @@ export default function App() {
   const inGame = clients.clients.filter((c) => c.state === "inGame").length;
   const allIn = inGame > 0 && inGame === clients.clients.length;
   const wasAllIn = useRef(allIn);
+  const cheerTimer = useRef<number | undefined>(undefined);
   useEffect(() => {
+    // The timer is not cleared when a client leaves meanwhile: the cheer always ends.
     if (allIn && !wasAllIn.current) {
       setCheer(true);
-      const timer = setTimeout(() => setCheer(false), CHEER_MS);
-      wasAllIn.current = allIn;
-      return () => clearTimeout(timer);
+      clearTimeout(cheerTimer.current);
+      cheerTimer.current = window.setTimeout(() => setCheer(false), CHEER_MS);
     }
     wasAllIn.current = allIn;
   }, [allIn]);
+  useEffect(() => () => clearTimeout(cheerTimer.current), []);
   const downName = clients.clients.find((c) => c.state === "dropped" || c.state === "joinFailed");
   const panicName = alarm ?? (downName ? nameOf.current(downName.account) : null);
   const mood: Mood = panicName ? "panic" : cheer ? "cheering" : windowsOpen ? "playing" : "sleeping";

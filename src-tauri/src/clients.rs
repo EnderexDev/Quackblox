@@ -207,6 +207,9 @@ fn kind_of(e: &Exited) -> &'static str {
         Some(_) => "dropped",
         None if e.join_failed => "joinFailed",
         None if e.code != 0 => "crashed",
+        // Gone before its window ever showed, with nothing in its log: it never started (a tray
+        // player took its game, or Roblox ended it at once). He cannot close a window not shown.
+        None if !e.had_window => "crashed",
         None => "closed",
     }
 }
@@ -504,7 +507,10 @@ impl Clients {
             let Ok(h) = (unsafe { OpenProcess(access, false, pid) }) else { continue };
             let proc = Proc(h);
             let Some((created, _)) = times(proc.0) else { continue };
-            let left_by_client = gone.iter().any(|&(p, at)| p == parent && created <= at);
+            // A client still closing has its tray player already (seen 28/10/26: born 5 s before
+            // its client ended, and the next launch went into it as a window of no account). A
+            // client of Quackblox's starts no other player, so a windowless child of one is it.
+            let left_by_client = gone.iter().any(|&(p, at)| p == parent && created <= at) || ours.contains(&parent);
             let orphan = now.saturating_sub(created) > 30 * 10_000_000 && !running(parent);
             if (left_by_client || orphan) && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
                 let _ = unsafe { WaitForSingleObject(proc.0, 3000) };
