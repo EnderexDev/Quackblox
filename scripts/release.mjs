@@ -39,7 +39,8 @@ try {
 } catch {
   fail(`${BRANCH} on GitHub has commits this checkout lacks: merge them first`);
 }
-if (read("git", ["status", "--porcelain", "--untracked-files=no"])) fail("the tree has changes: commit or drop them first");
+// Untracked files count too: a new source file would go into the build but not into master.
+if (read("git", ["status", "--porcelain"])) fail("the tree has changes or new files: commit or drop them first");
 const keyPath = join(homedir(), ".tauri", "quackblox.key");
 const key = process.env.TAURI_SIGNING_PRIVATE_KEY ?? (existsSync(keyPath) ? readFileSync(keyPath, "utf8").trim() : null);
 if (!key) fail(`no signing key at ${keyPath}`);

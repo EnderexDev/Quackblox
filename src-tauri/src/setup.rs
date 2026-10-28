@@ -26,7 +26,8 @@ const NAME: &str = "Quackblox";
 /// The NSIS script's binary (the crate's name).
 const BINARY: &str = "quackblox.exe";
 const UPDATE_ARG: &str = "--quackblox-update";
-const UPDATER_EXE: &str = "Quackblox-Updater.exe";
+/// The temp copy that runs an update: this, a random id, ".exe".
+const UPDATER_PREFIX: &str = "Quackblox-Updater-";
 
 pub enum Mode {
     /// Quackblox-Setup.exe: the installer starts this many bytes from the end of the exe.
@@ -60,6 +61,12 @@ pub fn mode() -> Option<Mode> {
 
 /// Runs the installer window in place of the app: no tray, multi or single instance.
 pub fn run(mut context: tauri::Context<tauri::Wry>, mode: Mode) {
+    // One installer or update window at a time: a second would share its WebView2 folder and
+    // could run a second NSIS. The handle lives as long as this process.
+    let _one = unsafe { windows::Win32::System::Threading::CreateMutexW(None, true, windows::core::w!("StarX_Quackblox_Setup")) };
+    if unsafe { windows::Win32::Foundation::GetLastError() } == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
+        return;
+    }
     context.config_mut().app.windows.clear();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -169,7 +176,7 @@ async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(),
         Mode::Update { .. } => return Err("isto não é um instalador".into()),
     };
     let shortcut = desktop_shortcut();
-    INSTALLING.store(true, Ordering::SeqCst);
+    let busy = Busy::claim()?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         // A name nobody can guess ahead, so no one holds the file open before it is written.
         let installer = std::env::temp_dir().join(format!("Quackblox-Install-{}.exe", uuid::Uuid::new_v4()));
@@ -185,11 +192,30 @@ async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(),
         Ok(())
     })
     .await;
-    INSTALLING.store(false, Ordering::SeqCst);
+    drop(busy);
     result.map_err(|e| e.to_string())?
 }
 
+/// True while an install or update runs: the window will not close, and a second one is refused.
 static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Holds INSTALLING for one install or update, and lets it go however that ends.
+struct Busy;
+
+impl Busy {
+    fn claim() -> Result<Busy, String> {
+        INSTALLING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| Busy)
+            .map_err(|_| "já tem uma instalação rodando".to_string())
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
 
 fn extract(offset: u64, len: u64) -> Result<Vec<u8>, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -295,6 +321,8 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
         Mode::Update { dir } => dir.clone(),
         Mode::Install { .. } => return Err("isto não é uma atualização".into()),
     };
+    // From the check on: a second click waits for this one instead of starting another.
+    let busy = Busy::claim()?;
     let update = app
         .updater()
         .map_err(|e| e.to_string())?
@@ -321,13 +349,12 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
         .await
         .map_err(|e| e.to_string())?;
     let _ = progress.send(Progress::Installing);
-    INSTALLING.store(true, Ordering::SeqCst);
     let result = tauri::async_runtime::spawn_blocking(move || {
         let installer = std::env::temp_dir().join(format!("Quackblox-Update-{}.exe", uuid::Uuid::new_v4()));
         install_from(&installer, &bytes, &["/UPDATE", "/R"], &dir)
     })
     .await;
-    INSTALLING.store(false, Ordering::SeqCst);
+    drop(busy);
     result.map_err(|e| e.to_string())??;
     app.exit(0);
     Ok(())
@@ -336,10 +363,24 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
 /// From the app: hands the update to a copy of this exe in the temp folder and quits.
 #[tauri::command]
 pub fn update_in_window(app: AppHandle) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("sem pasta de instalação")?.to_path_buf();
-    let copy = std::env::temp_dir().join(UPDATER_EXE);
-    std::fs::copy(&exe, &copy).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
+    // A new file by a name nobody can guess ahead (no link planted there to follow), shared
+    // for reading only while written; clean_up deletes it after the update.
+    let copy = std::env::temp_dir().join(format!("{UPDATER_PREFIX}{}.exe", uuid::Uuid::new_v4()));
+    let bytes = std::fs::read(&exe).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0x1)
+        .open(&copy)
+        .and_then(|mut f| f.write_all(&bytes))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&copy);
+            format!("não consegui copiar o Quackblox pra atualizar: {e}")
+        })?;
     Command::new(&copy)
         .arg(UPDATE_ARG)
         .arg(&dir)
@@ -349,7 +390,22 @@ pub fn update_in_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The updater copy a past update left in the temp folder (it cannot delete its own file).
+/// The updater copies a past update left in the temp folder (one cannot delete its own file).
+/// Tried at start and again a minute later: NSIS's /R opens this app while the copy that ran it
+/// may still be closing.
 pub fn clean_up() {
-    let _ = std::fs::remove_file(std::env::temp_dir().join(UPDATER_EXE));
+    let sweep = || {
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with(UPDATER_PREFIX) && name.ends_with(".exe") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    };
+    sweep();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        sweep();
+    });
 }

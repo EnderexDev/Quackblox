@@ -88,7 +88,11 @@ export function Setup() {
     }
   };
 
-  const open = () => invoke("setup_launch", { dir: installedDir }).catch((e) => setStage({ kind: "openError", message: String(e) }));
+  // After a failed update, a failed open keeps that error (and its Tentar de novo).
+  const open = () =>
+    invoke("setup_launch", { dir: installedDir }).catch((e) =>
+      setStage(info?.mode === "update" ? { kind: "error", message: String(e) } : { kind: "openError", message: String(e) }),
+    );
 
   if (!info) return <div className="setup" />;
   const updating = info.mode === "update";
