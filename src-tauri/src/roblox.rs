@@ -20,7 +20,7 @@ fn client() -> &'static Client {
 }
 
 fn cookie_header(cookie: &str) -> Result<HeaderValue, String> {
-    HeaderValue::from_str(&format!(".ROBLOSECURITY={cookie}")).map_err(|_| "login inválido".to_string())
+    HeaderValue::from_str(&format!(".ROBLOSECURITY={cookie}")).map_err(|_| tr!("login inválido", "invalid login"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,14 +45,14 @@ pub async fn user_of(cookie: &str) -> Result<User, String> {
         .header(COOKIE, cookie_header(cookie)?)
         .send()
         .await
-        .map_err(|e| format!("sem conexão com o Roblox: {e}"))?;
+        .map_err(|e| tr!("sem conexão com o Roblox: {e}", "no connection to Roblox: {e}"))?;
     if res.status() == 401 {
-        return Err("o login dessa conta expirou".into());
+        return Err(tr!("o login dessa conta expirou", "this account's login expired"));
     }
     if !res.status().is_success() {
-        return Err(format!("o Roblox recusou agora (HTTP {}), tenta de novo daqui a pouco", res.status().as_u16()));
+        return Err(tr!("o Roblox recusou agora (HTTP {}), tenta de novo daqui a pouco", "Roblox refused right now (HTTP {}), try again in a moment", res.status().as_u16()));
     }
-    let raw: Raw = res.json().await.map_err(|e| format!("resposta estranha do Roblox: {e}"))?;
+    let raw: Raw = res.json().await.map_err(|e| tr!("resposta estranha do Roblox: {e}", "unexpected answer from Roblox: {e}"))?;
     Ok(User { id: raw.id, name: raw.name, display_name: raw.display_name })
 }
 
@@ -110,7 +110,7 @@ pub fn parse_game(input: &str) -> Option<(u64, Option<String>)> {
 
 /// The game's name and icon, for the picker and the recent games.
 pub async fn game(input: &str) -> Result<Game, String> {
-    let (place_id, job_id) = parse_game(input).ok_or("isso não parece um jogo: cola o link ou o ID")?;
+    let (place_id, job_id) = parse_game(input).ok_or_else(|| tr!("isso não parece um jogo: cola o link ou o ID", "that doesn't look like a game: paste the link or the ID"))?;
     #[derive(Deserialize)]
     struct Universe {
         #[serde(rename = "universeId")]
@@ -120,11 +120,11 @@ pub async fn game(input: &str) -> Result<Game, String> {
         .get(format!("https://apis.roblox.com/universes/v1/places/{place_id}/universe"))
         .send()
         .await
-        .map_err(|e| format!("sem conexão com o Roblox: {e}"))?
+        .map_err(|e| tr!("sem conexão com o Roblox: {e}", "no connection to Roblox: {e}"))?
         .json()
         .await
-        .map_err(|_| "não achei esse jogo".to_string())?;
-    let universe_id = universe.universe_id.ok_or("não achei esse jogo")?;
+        .map_err(|_| tr!("não achei esse jogo", "couldn't find that game"))?;
+    let universe_id = universe.universe_id.ok_or_else(|| tr!("não achei esse jogo", "couldn't find that game"))?;
 
     #[derive(Deserialize)]
     struct Detail {
@@ -144,7 +144,7 @@ pub async fn game(input: &str) -> Result<Game, String> {
         Some(r) => r.json::<Details>().await.ok().and_then(|d| d.data.into_iter().next()).map(|d| d.name),
         None => None,
     }
-    .unwrap_or_else(|| format!("Jogo {place_id}"));
+    .unwrap_or_else(|| tr!("Jogo {place_id}", "Game {place_id}"));
 
     #[derive(Deserialize)]
     struct Icon {
@@ -203,13 +203,13 @@ async fn ticket_inner(cookie: &str, new_cookie: &mut Option<String>) -> Result<S
         req.send()
     };
     cookie_header(cookie)?;
-    let first = send(cookie, None).await.map_err(|e| format!("sem conexão com o Roblox: {e}"))?;
+    let first = send(cookie, None).await.map_err(|e| tr!("sem conexão com o Roblox: {e}", "no connection to Roblox: {e}"))?;
     // A rotation in the first answer is the login the second request has to use.
     *new_cookie = rotated(first.headers());
     let res = match first.headers().get("x-csrf-token").cloned() {
         Some(token) if first.status() == 403 => {
             let current = new_cookie.clone().unwrap_or_else(|| cookie.to_string());
-            send(&current, Some(token)).await.map_err(|e| format!("sem conexão com o Roblox: {e}"))?
+            send(&current, Some(token)).await.map_err(|e| tr!("sem conexão com o Roblox: {e}", "no connection to Roblox: {e}"))?
         }
         _ => first,
     };
@@ -217,13 +217,13 @@ async fn ticket_inner(cookie: &str, new_cookie: &mut Option<String>) -> Result<S
         *new_cookie = Some(latest);
     }
     if res.status() == 401 {
-        return Err("o login dessa conta expirou".into());
+        return Err(tr!("o login dessa conta expirou", "this account's login expired"));
     }
     res.headers()
         .get("rbx-authentication-ticket")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
-        .ok_or_else(|| format!("o Roblox não deu o ticket de entrada (HTTP {})", res.status().as_u16()))
+        .ok_or_else(|| tr!("o Roblox não deu o ticket de entrada (HTTP {})", "Roblox didn't give the join ticket (HTTP {})", res.status().as_u16()))
 }
 
 fn encode(s: &str) -> String {

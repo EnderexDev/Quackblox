@@ -11,12 +11,39 @@ pub const MINIMIZED_ARG: &str = "--minimized";
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// `npm run app:dev` runs as "Quackblox Dev" (tauri.dev.conf.json): its own data, tray icon and
+/// Windows startup entry, so it runs beside the installed Quackblox without touching it.
+pub const APP_NAME: &str = if cfg!(debug_assertions) { "Quackblox Dev" } else { "Quackblox" };
+
 pub struct TrayStartup(CheckMenuItem<tauri::Wry>);
+/// The menu's other items, renamed when the language changes.
+struct TrayItems(MenuItem<tauri::Wry>, MenuItem<tauri::Wry>);
+
+fn show_text() -> String {
+    tr!("Mostrar o Quackblox", "Show Quackblox")
+}
+fn startup_text() -> String {
+    tr!("Iniciar com o Windows", "Start with Windows")
+}
+fn quit_text() -> String {
+    tr!("Sair do Quackblox", "Quit Quackblox")
+}
+
+/// The tray menu in the language just picked.
+pub fn retranslate(app: &AppHandle) {
+    if let Some(items) = app.try_state::<TrayItems>() {
+        let _ = items.0.set_text(show_text());
+        let _ = items.1.set_text(quit_text());
+    }
+    if let Some(startup) = app.try_state::<TrayStartup>() {
+        let _ = startup.0.set_text(startup_text());
+    }
+}
 
 fn launcher() -> Result<AutoLaunch, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     AutoLaunchBuilder::new()
-        .set_app_name("Quackblox")
+        .set_app_name(APP_NAME)
         .set_app_path(&exe.display().to_string())
         .set_args(&[MINIMIZED_ARG])
         .set_windows_enable_mode(WindowsEnableMode::CurrentUser)
@@ -51,16 +78,17 @@ pub fn show_window(app: &AppHandle) {
 }
 
 pub fn setup(app: &App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Mostrar o Quackblox", true, None::<&str>)?;
-    let autostart = CheckMenuItem::with_id(app, "autostart", "Iniciar com o Windows", true, start_with_windows(), None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Sair do Quackblox", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", show_text(), true, None::<&str>)?;
+    let autostart = CheckMenuItem::with_id(app, "autostart", startup_text(), true, start_with_windows(), None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", quit_text(), true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &autostart, &PredefinedMenuItem::separator(app)?, &quit])?;
     let autostart_item = autostart.clone();
     // Kept so the window's switch can move the tray's check mark too.
     app.manage(TrayStartup(autostart.clone()));
+    app.manage(TrayItems(show.clone(), quit.clone()));
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("app icon"))
-        .tooltip("Quackblox")
+        .tooltip(APP_NAME)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {

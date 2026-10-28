@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { CloseIcon, DuckIcon, FolderIcon } from "./icons";
 import { Toggle } from "./Toggle";
+import { useT } from "../i18n";
 
 type Info = { mode: "install" | "update"; version: string; dir: string; installed: boolean };
 type Progress = { stage: "found"; version: string } | { stage: "downloading"; percent: number | null } | { stage: "installing" };
@@ -22,6 +23,7 @@ type Stage =
 const close = () => invoke("setup_close");
 
 export function Setup() {
+  const t = useT();
   const [info, setInfo] = useState<Info | null>(null);
   const [dir, setDir] = useState("");
   const [desktop, setDesktop] = useState(true);
@@ -101,44 +103,44 @@ export function Setup() {
 
   const title =
     stage.kind === "done" || stage.kind === "openError"
-      ? "Quackblox instalado"
+      ? t.setupInstalled
       : stage.kind === "error"
         ? updating
-          ? "A atualização não foi"
-          : "A instalação não foi"
+          ? t.setupUpdateFailed
+          : t.setupInstallFailed
         : updating
           ? version
-            ? `Atualizando pro Quackblox ${version}`
-            : "Procurando a versão nova…"
+            ? t.setupUpdatingTo(version)
+            : t.setupLookingForVersion
           : "Quackblox";
 
   const line =
     stage.kind === "downloading"
       ? stage.percent === null
-        ? "Baixando…"
-        : `Baixando… ${stage.percent}%`
+        ? t.setupDownloading
+        : t.setupDownloadingPercent(stage.percent)
       : stage.kind === "installing"
         ? updating
-          ? "Instalando. O Quackblox abre de novo sozinho."
-          : "Instalando…"
+          ? t.setupInstallingUpdate
+          : t.setupInstalling
         : stage.kind === "done"
-          ? "Várias contas, um pato só."
+          ? t.setupDone
           : failed
             ? stage.message
             : stage.kind === "checking"
-              ? "Perguntando pro GitHub…"
+              ? t.setupAskingGitHub
               : info.installed
-                ? `O Quackblox ${version} por cima do que já está nesta pasta. Tuas contas e configurações ficam.`
-                : "Várias contas do Roblox abertas ao mesmo tempo.";
+                ? t.setupOverExisting(version)
+                : t.setupPitch;
 
   return (
     <div className="setup">
       <header className="setup-bar" data-tauri-drag-region>
         <span className="setup-bar-title" data-tauri-drag-region>
-          {updating ? "Atualização do Quackblox" : "Instalar o Quackblox"}
+          {updating ? t.setupUpdateTitle : t.setupInstallTitle}
         </span>
         {!busy && (
-          <button className="setup-close" aria-label="Fechar" onClick={close}>
+          <button className="setup-close" aria-label={t.close} onClick={close}>
             <CloseIcon size={14} />
           </button>
         )}
@@ -166,11 +168,11 @@ export function Setup() {
                 {dir}
               </span>
               <button className="pill-button" disabled={picking} onClick={pick}>
-                Alterar…
+                {t.change}
               </button>
             </div>
             <label className="setup-option">
-              <span>Atalho na área de trabalho</span>
+              <span>{t.desktopShortcut}</span>
               <Toggle on={desktop} onChange={setDesktop} />
             </label>
           </div>
@@ -179,22 +181,22 @@ export function Setup() {
         <div className="setup-actions">
           {stage.kind === "ready" && !updating && (
             <button className="primary" disabled={picking} onClick={install}>
-              {info.installed ? "Atualizar" : "Instalar"}
+              {info.installed ? t.update : t.install}
             </button>
           )}
           {(stage.kind === "done" || stage.kind === "openError") && (
             <button className="primary" onClick={open}>
-              Abrir o Quackblox
+              {t.openQuackblox}
             </button>
           )}
           {stage.kind === "error" && (
             <>
               <button className="primary" disabled={picking} onClick={updating ? update : install}>
-                Tentar de novo
+                {t.tryAgain}
               </button>
               {updating && (
                 <button className="secondary" onClick={open}>
-                  Abrir o Quackblox
+                  {t.openQuackblox}
                 </button>
               )}
             </>

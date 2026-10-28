@@ -7,6 +7,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { notify, toast } from "./toast";
+import { t } from "./i18n";
 
 export type UpdateState =
   | { kind: "idle" }
@@ -53,18 +54,18 @@ export async function checkForUpdate(quiet = false) {
     found = update?.version ?? null;
     if (!update) {
       set({ kind: "latest" });
-      if (!quiet) notify("O Quackblox está na versão mais nova", "info");
+      if (!quiet) notify(t().upToDate, "info");
       return;
     }
     set({ kind: "available", version: update.version });
     if (told !== update.version) {
       told = update.version;
-      notify(`Saiu o Quackblox ${update.version}`, "info", { label: "Atualizar", run: installUpdate });
+      notify(t().newVersion(update.version), "info", { label: t().update, run: installUpdate });
     }
   } catch (e) {
     // A version found before is still there to install.
     set(found ? { kind: "available", version: found } : { kind: "error", message: String(e) });
-    if (!quiet) toast(`Não consegui procurar atualização: ${String(e)}`);
+    if (!quiet) toast(t().checkFailed(String(e)));
   }
 }
 
@@ -77,7 +78,7 @@ export async function installUpdate() {
     await invoke("update_in_window");
   } catch (e) {
     set({ kind: "available", version });
-    toast(`Não consegui atualizar: ${String(e)}`);
+    toast(t().updateFailed(String(e)));
   }
 }
 

@@ -36,5 +36,5 @@ pub fn open_link(url: &str) -> Result<(), String> {
     let url = HSTRING::from(url);
     let r = unsafe { ShellExecuteW(None, w!("open"), &url, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
     // ShellExecute reports success as a value above 32.
-    if r.0 as isize > 32 { Ok(()) } else { Err(format!("o Windows não abriu o link (código {})", r.0 as isize)) }
+    if r.0 as isize > 32 { Ok(()) } else { Err(tr!("o Windows não abriu o link (código {})", "Windows didn't open the link (code {})", r.0 as isize)) }
 }

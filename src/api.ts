@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 
 export type User = { id: number; name: string; displayName: string };
 export type Account = User & { lastPlayed: number | null; expired: boolean };
-export type Settings = { autoClose: boolean };
+export type Settings = { autoClose: boolean; language: "pt" | "en" };
 export type Game = { placeId: number; jobId: string | null; name: string; icon: string | null };
 
 export const api = {

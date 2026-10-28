@@ -73,6 +73,8 @@ pub fn run(mut context: tauri::Context<tauri::Wry>, mode: Mode) {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(mode)
         .setup(|app| {
+            // The language the app was left in (settings.rs), for this window's texts.
+            crate::settings::load(app.handle());
             // Its own WebView2 data: the install may run while Quackblox is open.
             let data = std::env::temp_dir().join("Quackblox-Setup-WebView");
             WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
@@ -98,6 +100,7 @@ pub fn run(mut context: tauri::Context<tauri::Wry>, mode: Mode) {
         })
         .invoke_handler(tauri::generate_handler![
             setup_info,
+            crate::settings::settings_get,
             setup_installed,
             setup_pick_folder,
             setup_install,
@@ -154,7 +157,7 @@ fn setup_installed(dir: String) -> bool {
 async fn setup_pick_folder(app: AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let dialog = app.dialog().clone();
-    tauri::async_runtime::spawn_blocking(move || dialog.file().set_title("Onde instalar o Quackblox").blocking_pick_folder())
+    tauri::async_runtime::spawn_blocking(move || dialog.file().set_title(tr!("Onde instalar o Quackblox", "Where to install Quackblox")).blocking_pick_folder())
         .await
         .ok()
         .flatten()
@@ -173,7 +176,7 @@ async fn setup_pick_folder(app: AppHandle) -> Option<String> {
 async fn setup_install(app: AppHandle, dir: String, desktop: bool) -> Result<(), String> {
     let (offset, len) = match app.state::<Mode>().inner() {
         Mode::Install { offset, len } => (*offset, *len),
-        Mode::Update { .. } => return Err("isto não é um instalador".into()),
+        Mode::Update { .. } => return Err(tr!("isto não é um instalador", "this is not an installer")),
     };
     let shortcut = desktop_shortcut();
     let busy = Busy::claim()?;
@@ -207,7 +210,7 @@ impl Busy {
         INSTALLING
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map(|_| Busy)
-            .map_err(|_| "já tem uma instalação rodando".to_string())
+            .map_err(|_| tr!("já tem uma instalação rodando", "an install is already running"))
     }
 }
 
@@ -222,7 +225,7 @@ fn extract(offset: u64, len: u64) -> Result<Vec<u8>, String> {
     let mut from = File::open(exe).map_err(|e| e.to_string())?;
     from.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
     let mut bytes = Vec::with_capacity(len as usize);
-    from.take(len).read_to_end(&mut bytes).map_err(|e| format!("não consegui ler o instalador: {e}"))?;
+    from.take(len).read_to_end(&mut bytes).map_err(|e| tr!("não consegui ler o instalador: {e}", "couldn't read the installer: {e}"))?;
     Ok(bytes)
 }
 
@@ -241,28 +244,28 @@ fn write_held(path: &Path, bytes: &[u8]) -> Result<File, String> {
             .create_new(true)
             .share_mode(0x1)
             .open(path)
-            .map_err(|e| format!("não consegui gravar o arquivo: {e}"))?;
-        file.write_all(bytes).map_err(|e| format!("não consegui gravar o arquivo: {e}"))?;
+            .map_err(|e| tr!("não consegui gravar o arquivo: {e}", "couldn't write the file: {e}"))?;
+        file.write_all(bytes).map_err(|e| tr!("não consegui gravar o arquivo: {e}", "couldn't write the file: {e}"))?;
         drop(file);
         let mut held = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(0x1)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
-            .map_err(|e| format!("não consegui abrir o arquivo: {e}"))?;
+            .map_err(|e| tr!("não consegui abrir o arquivo: {e}", "couldn't open the file: {e}"))?;
         let meta = held.metadata().map_err(|e| e.to_string())?;
         if !meta.is_file() || meta.file_type().is_symlink() {
-            return Err("o arquivo virou um atalho antes de rodar".to_string());
+            return Err(tr!("o arquivo virou um atalho antes de rodar", "the file turned into a link before it ran"));
         }
         // A different size is a different file: refused before reading, and never read past
         // the expected size, whatever was put there.
         if meta.len() != bytes.len() as u64 {
-            return Err("o arquivo mudou no disco antes de rodar".to_string());
+            return Err(tr!("o arquivo mudou no disco antes de rodar", "the file changed on disk before it ran"));
         }
         let mut on_disk = Vec::with_capacity(bytes.len());
-        (&mut held).take(bytes.len() as u64 + 1).read_to_end(&mut on_disk).map_err(|e| format!("não consegui ler o arquivo: {e}"))?;
+        (&mut held).take(bytes.len() as u64 + 1).read_to_end(&mut on_disk).map_err(|e| tr!("não consegui ler o arquivo: {e}", "couldn't read the file: {e}"))?;
         if on_disk != bytes {
-            return Err("o arquivo mudou no disco antes de rodar".to_string());
+            return Err(tr!("o arquivo mudou no disco antes de rodar", "the file changed on disk before it ran"));
         }
         Ok(held)
     })();
@@ -292,11 +295,11 @@ fn run_nsis(installer: &Path, flags: &[&str], dir: &Path) -> Result<(), String> 
         .args(flags)
         .raw_arg(format!("/D={}", dir.display()))
         .status()
-        .map_err(|e| format!("não consegui iniciar o instalador: {e}"))?;
+        .map_err(|e| tr!("não consegui iniciar o instalador: {e}", "couldn't start the installer: {e}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("o instalador parou com o código {}", status.code().unwrap_or(-1)))
+        Err(tr!("o instalador parou com o código {}", "the installer stopped with code {}", status.code().unwrap_or(-1)))
     }
 }
 
@@ -316,7 +319,7 @@ fn desktop_shortcut() -> Option<PathBuf> {
 fn setup_launch(app: AppHandle, dir: String) -> Result<(), String> {
     Command::new(Path::new(&dir).join(BINARY))
         .spawn()
-        .map_err(|e| format!("não consegui abrir o Quackblox: {e}"))?;
+        .map_err(|e| tr!("não consegui abrir o Quackblox: {e}", "couldn't open Quackblox: {e}"))?;
     app.exit(0);
     Ok(())
 }
@@ -341,7 +344,7 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
     use tauri_plugin_updater::UpdaterExt;
     let dir = match app.state::<Mode>().inner() {
         Mode::Update { dir } => dir.clone(),
-        Mode::Install { .. } => return Err("isto não é uma atualização".into()),
+        Mode::Install { .. } => return Err(tr!("isto não é uma atualização", "this is not an update")),
     };
     // From the check on: a second click waits for this one instead of starting another.
     let busy = Busy::claim()?;
@@ -351,7 +354,7 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
         .check()
         .await
         .map_err(|e| e.to_string())?
-        .ok_or("o Quackblox já está na versão mais nova")?;
+        .ok_or_else(|| tr!("o Quackblox já está na versão mais nova", "Quackblox is already on the newest version"))?;
     let _ = progress.send(Progress::Found { version: update.version.clone() });
     // Some(None): a download whose size the server did not give, shown without a number.
     let (mut got, mut shown) = (0u64, None::<Option<u8>>);
@@ -386,17 +389,17 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
 #[tauri::command]
 pub fn update_in_window(app: AppHandle) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = exe.parent().ok_or("sem pasta de instalação")?.to_path_buf();
+    let dir = exe.parent().ok_or_else(|| tr!("sem pasta de instalação", "no install folder"))?.to_path_buf();
     // A name nobody can guess ahead, held from the check until the copy has started
     // (write_held); clean_up deletes it after the update.
     let copy = std::env::temp_dir().join(format!("{UPDATER_PREFIX}{}.exe", uuid::Uuid::new_v4()));
-    let bytes = std::fs::read(&exe).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
-    let held = write_held(&copy, &bytes).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
+    let bytes = std::fs::read(&exe).map_err(|e| tr!("não consegui copiar o Quackblox pra atualizar: {e}", "couldn't copy Quackblox to update it: {e}"))?;
+    let held = write_held(&copy, &bytes).map_err(|e| tr!("não consegui copiar o Quackblox pra atualizar: {e}", "couldn't copy Quackblox to update it: {e}"))?;
     let started = Command::new(&copy).arg(UPDATE_ARG).arg(&dir).spawn();
     drop(held);
     if let Err(e) = started {
         let _ = std::fs::remove_file(&copy);
-        return Err(format!("não consegui iniciar a atualização: {e}"));
+        return Err(tr!("não consegui iniciar a atualização: {e}", "couldn't start the update: {e}"));
     }
     crate::desktop::quit(&app);
     Ok(())

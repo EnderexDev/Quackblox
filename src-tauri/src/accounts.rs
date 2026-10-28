@@ -79,7 +79,7 @@ impl Store {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, text)
             .and_then(|_| std::fs::rename(&tmp, &self.path))
-            .map_err(|e| format!("não consegui salvar as contas no disco: {e}"))
+            .map_err(|e| tr!("não consegui salvar as contas no disco: {e}", "couldn't save the accounts to disk: {e}"))
     }
 
     /// Changes the list and writes it; on a failed write the list in memory goes back too, so
@@ -93,9 +93,9 @@ impl Store {
 
     fn login_of(&self, id: u64) -> Result<String, String> {
         let list = self.list.lock().unwrap();
-        let saved = list.iter().find(|s| s.id == id).ok_or("essa conta não está mais salva")?;
-        let encrypted = B64.decode(&saved.login).map_err(|_| "o login salvo está corrompido")?;
-        String::from_utf8(win::unprotect(&encrypted)?).map_err(|_| "o login salvo está corrompido".into())
+        let saved = list.iter().find(|s| s.id == id).ok_or_else(|| tr!("essa conta não está mais salva", "that account is no longer saved"))?;
+        let encrypted = B64.decode(&saved.login).map_err(|_| tr!("o login salvo está corrompido", "the saved login is corrupted"))?;
+        String::from_utf8(win::unprotect(&encrypted)?).map_err(|_| tr!("o login salvo está corrompido", "the saved login is corrupted"))
     }
 
     fn put(&self, user: &roblox::User, cookie: &str) -> Result<(), String> {
@@ -179,13 +179,13 @@ pub async fn accounts_add(app: AppHandle) -> Result<(), String> {
     // one stops, instead of watching the new window too. Bumped before the window exists, so
     // an old watcher never sees the new one.
     let generation = LOGIN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let url = "https://www.roblox.com/login".parse().map_err(|_| "endereço de login inválido")?;
+    let url = "https://www.roblox.com/login".parse().map_err(|_| tr!("endereço de login inválido", "invalid login address"))?;
     let window = WebviewWindowBuilder::new(&app, LOGIN_LABEL, WebviewUrl::External(url))
-        .title("Entrar numa conta do Roblox")
+        .title(tr!("Entrar numa conta do Roblox", "Sign in to a Roblox account"))
         .inner_size(520.0, 760.0)
         .incognito(true)
         .build()
-        .map_err(|e| format!("não abriu a janela de login: {e}"))?;
+        .map_err(|e| tr!("não abriu a janela de login: {e}", "the login window didn't open: {e}"))?;
     let roblox_url: tauri::Url = "https://www.roblox.com/".parse().unwrap();
 
     // Cookies are read off the main thread: on Windows the read deadlocks inside a command.
@@ -218,7 +218,7 @@ pub async fn accounts_add(app: AppHandle) -> Result<(), String> {
                 Err((e, true)) => {
                     if !warned {
                         warned = true;
-                        let _ = app.emit("account-error", format!("{e}. Tentando de novo..."));
+                        let _ = app.emit("account-error", tr!("{e}. Tentando de novo...", "{e}. Trying again..."));
                     }
                     std::thread::sleep(Duration::from_secs(3));
                     continue;
@@ -252,8 +252,8 @@ pub struct Played {
 /// account's user id) in the game the input names.
 #[tauri::command]
 pub async fn play(app: AppHandle, account: String, game: String) -> Result<Played, String> {
-    let (place_id, job_id) = roblox::parse_game(&game).ok_or("escolhe um jogo primeiro")?;
-    let saved_id = if account == "app" { None } else { Some(account.parse::<u64>().map_err(|_| "conta inválida")?) };
+    let (place_id, job_id) = roblox::parse_game(&game).ok_or_else(|| tr!("escolhe um jogo primeiro", "pick a game first"))?;
+    let saved_id = if account == "app" { None } else { Some(account.parse::<u64>().map_err(|_| tr!("conta inválida", "invalid account"))?) };
     let cookie = match saved_id {
         None => app_account::cookie()?,
         Some(id) => app.state::<Store>().login_of(id)?,

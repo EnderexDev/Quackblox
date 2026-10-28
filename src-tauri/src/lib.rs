@@ -1,3 +1,11 @@
+/// A text for the user in the language picked (settings.rs): `tr!("pt", "en", args...)`, both
+/// format strings taking the same arguments. Defined before the modules so all of them see it.
+macro_rules! tr {
+    ($pt:literal, $en:literal $(, $arg:expr)* $(,)?) => {
+        if crate::settings::english() { format!($en $(, $arg)*) } else { format!($pt $(, $arg)*) }
+    };
+}
+
 mod accounts;
 mod app_account;
 mod desktop;

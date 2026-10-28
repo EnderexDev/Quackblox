@@ -109,6 +109,12 @@ static CLOSED: AtomicUsize = AtomicUsize::new(0);
 /// Ends every Roblox player process (the window and the one left in the tray after closing it),
 /// and says how many ended.
 fn close_roblox() -> usize {
+    // The dev build would find the installed Quackblox holding the lock and close the Roblox
+    // windows it opened.
+    if cfg!(debug_assertions) {
+        eprintln!("multi: the dev build does not close Roblox");
+        return 0;
+    }
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     // By full path: a bare name is searched in the app's own folder first.

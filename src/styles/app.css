@@ -131,6 +131,33 @@
   animation: pulse 1.6s ease-in-out infinite;
 }
 
+.lang-switch {
+  display: flex;
+  gap: 2px;
+  height: 32px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+}
+
+.lang-switch button {
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+
+.lang-switch button:hover:not(.on) {
+  color: var(--text);
+}
+
+.lang-switch button.on {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
 @keyframes pulse {
   50% {
     opacity: 0.35;
