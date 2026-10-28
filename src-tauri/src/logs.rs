@@ -111,11 +111,15 @@ pub struct Tail {
     pub joined: Option<u64>,
     /// The first reason written after the last join: why it left that server.
     pub reason: Option<u32>,
+    /// The server cut it off ("Lost connection with reason"), after the last join. Every real drop
+    /// measured wrote it (273, 276, 28/10/26) and no close did: a reason without it may be a
+    /// teleport on its way to the next server.
+    pub lost: bool,
 }
 
 impl Tail {
     pub fn new(path: PathBuf) -> Self {
-        Tail { path, offset: 0, joined: None, reason: None }
+        Tail { path, offset: 0, joined: None, reason: None, lost: false }
     }
 
     /// Reads what was appended since the last call. A line Roblox is still writing waits for the
@@ -144,8 +148,11 @@ impl Tail {
             if line.contains("Joining game '") {
                 self.joined = None;
                 self.reason = None;
+                self.lost = false;
             } else if let Some(c) = place.captures(line) {
                 self.joined = c[1].parse().ok();
+            } else if line.contains("Lost connection with reason") {
+                self.lost = true;
             } else if self.reason.is_none() {
                 if let Some(c) = reason_re().captures(line) {
                     self.reason = c[1].parse().ok();
@@ -205,10 +212,11 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
         writeln!(f, "x Sending disconnect with reason: 285").unwrap();
         tail.read();
         assert_eq!(tail.reason, Some(276), "the first reason stays");
+        assert!(tail.lost);
         // A teleport: the next server's join clears what ended the last one.
         writeln!(f, "x ! Joining game '11111111-9174-447f-97f1-e4ef40c6d8c0' place 2 at a\nx game_join_loadtime: placeid:2, userid:1").unwrap();
         tail.read();
-        assert_eq!((tail.joined, tail.reason), (Some(2), None));
+        assert_eq!((tail.joined, tail.reason, tail.lost), (Some(2), None, false));
         drop(f);
         let _ = std::fs::remove_file(path);
     }
@@ -235,9 +243,9 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
         let dir = dir().unwrap();
         let mut dropped = Tail::new(dir.join("0.745.0.7451137_20261028T215505Z_Player_7ADF9_last.log"));
         dropped.read();
-        assert_eq!((dropped.joined, dropped.reason), (Some(1818), Some(276)));
+        assert_eq!((dropped.joined, dropped.reason, dropped.lost), (Some(1818), Some(276), true));
         let mut closed = Tail::new(dir.join("0.745.0.7451137_20261028T191420Z_Player_C5015_last.log"));
         closed.read();
-        assert_eq!((closed.joined, closed.reason), (Some(1818), Some(285)));
+        assert_eq!((closed.joined, closed.reason, closed.lost), (Some(1818), Some(285), false));
     }
 }

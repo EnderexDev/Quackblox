@@ -212,7 +212,9 @@ pub fn take_from(user: u64) -> Option<String> {
 /// Whether rejoin is on for the client's card, its saved account, or the card it came back from.
 fn on(app: &AppHandle, f: &Fall) -> bool {
     let clients = app.state::<Clients>();
-    clients.rejoin_on(&f.account) || f.user.is_some_and(|u| clients.rejoin_on(&u.to_string())) || f.from.as_ref().is_some_and(|k| clients.rejoin_on(k))
+    // Each card's button means what it shows: a client of the Roblox app's card does not follow
+    // the saved card of the same account, unless a rejoin of that card opened it.
+    clients.rejoin_on(&f.account) || f.from.as_ref().is_some_and(|k| clients.rejoin_on(k))
 }
 
 /// `still`: whether this try is still wanted, asked again after each wait, before a client is
@@ -255,12 +257,11 @@ async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>, still: &(dyn Fn(
     if !still() {
         return Err(stopped());
     }
-    let game = match f.kind {
-        // A server that would not take it is not asked again: the next try goes to the game.
-        "joinFailed" => match crate::roblox::parse_game(&f.game) {
-            Some(p) if p.link_code.is_none() && p.job_id.is_some() => p.place_id.to_string(),
-            _ => f.game.clone(),
-        },
+    // A server that would not take it, or that ended (288 shut down, 517 and 771 gone), is not
+    // asked again: the next try goes to the game.
+    let server_gone = f.kind == "joinFailed" || matches!(f.reason, Some(288 | 517 | 771));
+    let game = match crate::roblox::parse_game(&f.game) {
+        Some(p) if server_gone && p.link_code.is_none() && p.job_id.is_some() => p.place_id.to_string(),
         _ => f.game.clone(),
     };
     let from = f.user.filter(|_| account != f.account);

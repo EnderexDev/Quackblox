@@ -33,8 +33,11 @@ use windows::core::BOOL;
 
 const PLAYER_EXE: &str = "RobloxPlayerBeta.exe";
 /// A reason in the log stands this long with no new join before it counts as a drop: a teleport
-/// leaves one server and joins the next.
+/// leaves one server and joins the next. 10 s when the server cut the client off (every real drop
+/// measured said so), 60 s when not: no teleport was measured yet, and one must never read as a
+/// drop that a rejoin would end.
 const DROP_GRACE: Duration = Duration::from_secs(10);
+const UNSURE_GRACE: Duration = Duration::from_secs(60);
 /// A client whose log shows no game this long after it started never joined: a refused entry
 /// shows only a dialog, and a server that does not exist leaves it on the loading screen (both
 /// measured 28/10/26, neither writes a code).
@@ -651,7 +654,8 @@ pub fn start(app: &AppHandle) {
                                 c.state = State::InGame;
                             }
                             (_, Some(_)) => {
-                                if c.reason_seen.get_or_insert_with(Instant::now).elapsed() >= DROP_GRACE {
+                                let grace = if tail.lost { DROP_GRACE } else { UNSURE_GRACE };
+                                if c.reason_seen.get_or_insert_with(Instant::now).elapsed() >= grace {
                                     c.state = State::Dropped;
                                 }
                             }
