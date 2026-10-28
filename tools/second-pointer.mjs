@@ -49,7 +49,7 @@ await sleep(100);
 console.log("after second pointer:", await names());
 const [x1, y1] = spots[0];
 for (let i = 1; i <= 10; i++) {
-  await mouse("mouseMoved", x0 + ((x1 - x0) * i) / 10, y0, 1);
+  await mouse("mouseMoved", x0 + ((x1 - x0) * i) / 10, y0 + ((y1 - y0) * i) / 10, 1);
   await sleep(25);
 }
 await mouse("mouseReleased", x1, y1, 0);
