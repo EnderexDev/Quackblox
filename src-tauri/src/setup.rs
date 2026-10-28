@@ -398,7 +398,8 @@ pub fn clean_up() {
         let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with(UPDATER_PREFIX) && name.ends_with(".exe") {
+            // "Quackblox-Updater.exe": the fixed name 0.2.0 and 0.2.1 used.
+            if (name.starts_with(UPDATER_PREFIX) && name.ends_with(".exe")) || name == "Quackblox-Updater.exe" {
                 let _ = std::fs::remove_file(e.path());
             }
         }
