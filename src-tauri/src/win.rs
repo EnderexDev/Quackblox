@@ -1,10 +1,10 @@
 // The few Windows calls Quackblox needs: DPAPI (the user's own encryption, the same one the
 // Roblox app uses for its saved login) and opening a roblox-player: link.
-use windows::Win32::Foundation::{HLOCAL, LocalFree};
+use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
 };
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -31,10 +31,20 @@ pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(take(out))
 }
 
-/// Hands a link to Windows, as a click on it would (roblox-player: opens the Roblox player).
-pub fn open_link(url: &str) -> Result<(), String> {
+/// Hands a link to Windows, as a click on it would (roblox-player: opens the Roblox player), and
+/// returns the process it started. Measured 28/10/26: the roblox-player: handler is the player
+/// itself, so the process is the client, its parent this app. None when Windows started none
+/// (a handler that hands the link to a process already running).
+pub fn open_link(url: &str) -> Result<Option<HANDLE>, String> {
     let url = HSTRING::from(url);
-    let r = unsafe { ShellExecuteW(None, w!("open"), &url, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
-    // ShellExecute reports success as a value above 32.
-    if r.0 as isize > 32 { Ok(()) } else { Err(tr!("o Windows não abriu o link (código {})", "Windows didn't open the link (code {})", r.0 as isize)) }
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: w!("open"),
+        lpFile: PCWSTR(url.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    unsafe { ShellExecuteExW(&mut info) }.map_err(|e| tr!("o Windows não abriu o link ({e})", "Windows didn't open the link ({e})"))?;
+    Ok((!info.hProcess.is_invalid()).then_some(info.hProcess))
 }

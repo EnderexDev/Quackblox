@@ -713,3 +713,167 @@
   background: var(--danger);
   color: #2a0606;
 }
+
+/* ---- Brand: the mascot and what it is doing ---- */
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.brand-mood {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* ---- Open clients: the bar over the cards and the line on each card ---- */
+
+.windows-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--green) 9%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--green) 22%, transparent);
+  animation: rise var(--t-mid) var(--ease-out);
+}
+
+.windows-count {
+  margin-right: auto;
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.pill-btn.small {
+  height: 30px;
+  padding: 0 13px;
+  font-size: 12.5px;
+  gap: 6px;
+}
+
+.live-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
+}
+
+.avatar-wrap {
+  position: relative;
+  flex: none;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.card-actions .round-btn {
+  width: 36px;
+  height: 36px;
+}
+
+/* The N of Ctrl+Shift+N, a key cap on the avatar's corner. */
+.hotkey-chip {
+  position: absolute;
+  right: -4px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--glass-strong);
+  border: 1px solid var(--surface-3);
+  border-bottom-width: 2px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.eco-btn.on {
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+  color: var(--green);
+}
+
+.eco-btn.on:not(:disabled):hover {
+  background: color-mix(in srgb, var(--green) 32%, transparent);
+  color: var(--green);
+}
+
+/* The numbers wrap below the count as one piece when the card is too narrow for both. */
+.live-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  margin-top: -2px;
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  animation: rise var(--t-mid) var(--ease-out);
+  transition: background var(--t-fast);
+}
+
+.live-line:not(:disabled):hover {
+  background: color-mix(in srgb, var(--green) 18%, transparent);
+}
+
+.live-line:disabled {
+  opacity: 1;
+}
+
+.live-line.starting .live-dot {
+  background: var(--accent-2);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-2) 22%, transparent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.live-label {
+  margin-right: auto;
+  white-space: nowrap;
+}
+
+.live-stats {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.live-stat {
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-stat b {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* A narrow card always gives the numbers a line of their own, centred; a wide one keeps them
+   on the right of the count. */
+.card.account {
+  container-type: inline-size;
+}
+
+@container (max-width: 290px) {
+  .live-stats {
+    flex-basis: 100%;
+    justify-content: center;
+    margin-left: 0;
+  }
+}

@@ -8,7 +8,9 @@ macro_rules! tr {
 
 mod accounts;
 mod app_account;
+mod clients;
 mod desktop;
+mod hotkeys;
 mod multi;
 mod roblox;
 mod settings;
@@ -34,6 +36,8 @@ pub fn run() {
             // Before the multi, which reads auto_close.
             settings::load(app.handle());
             multi::start(app.handle().clone());
+            clients::start(app.handle());
+            hotkeys::start(app.handle().clone());
             desktop::setup(app)?;
             Ok(())
         })
@@ -52,6 +56,11 @@ pub fn run() {
             accounts::avatars,
             accounts::game_info,
             accounts::play,
+            clients::clients_get,
+            clients::clients_set_eco,
+            clients::clients_focus,
+            clients::clients_minimize_others,
+            clients::clients_grid,
             desktop::startup_get,
             desktop::startup_set,
         ])

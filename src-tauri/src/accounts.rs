@@ -11,7 +11,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use crate::{app_account, multi, roblox, win};
+use crate::{app_account, clients, multi, roblox, win};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -141,11 +141,23 @@ pub fn accounts_move(store: tauri::State<Store>, id: u64, to: usize) -> Result<(
     })
 }
 
+/// The Roblox app's account as last read, for the title of the clients it opens.
+static APP_USER: Mutex<Option<roblox::User>> = Mutex::new(None);
+
 /// The account logged in to the Roblox app, or why there is none.
 #[tauri::command]
 pub async fn app_account() -> Result<roblox::User, String> {
     let cookie = app_account::cookie()?;
-    roblox::user_of(&cookie).await
+    let user = roblox::user_of(&cookie).await?;
+    *APP_USER.lock().unwrap() = Some(user.clone());
+    Ok(user)
+}
+
+/// The account keys in the order of the cards: the Roblox app's first, then the saved ones.
+pub fn order(app: &AppHandle) -> Vec<String> {
+    let store = app.state::<Store>();
+    let list = store.list.lock().unwrap();
+    std::iter::once("app".to_string()).chain(list.iter().map(|s| s.id.to_string())).collect()
 }
 
 #[tauri::command]
@@ -288,7 +300,15 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
             return Err(e);
         }
     };
-    win::open_link(&roblox::launch_link(&ticket, place_id, job_id.as_deref()))?;
+    let process = win::open_link(&roblox::launch_link(&ticket, place_id, job_id.as_deref()))?;
+    let name = match saved_id {
+        Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.display_name.clone()),
+        None => APP_USER.lock().unwrap().as_ref().map(|u| u.display_name.clone()),
+    };
+    match process {
+        Some(p) => app.state::<clients::Clients>().add(p, &account, name.as_deref().unwrap_or("Roblox")),
+        None => eprintln!("accounts: the link opened no process of its own, the client is not tied to {account}"),
+    }
     if let Some(id) = saved_id {
         // The client is already opening: a failed write here is only logged, never shown as a
         // failed play (that would invite a second click and a second client).

@@ -99,3 +99,26 @@ export const UsersIcon = (p: P) => (
     <path d="M2.5 19.5c.6-3.3 3.3-5.5 6.5-5.5s5.9 2.2 6.5 5.5M16 5.2a3.5 3.5 0 0 1 0 6.6M18.5 14.4c1.7.8 2.8 2.6 3.1 5.1" />
   </Icon>
 );
+
+export const LeafIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M5 19c0-8 5-14 15-14 0 10-6 15-14 15" />
+    <path d="M5 19c3-4 6-6.5 9.5-8.5" />
+  </Icon>
+);
+
+export const GridIcon = (p: P) => (
+  <Icon {...p}>
+    <rect x="4" y="4" width="7" height="7" rx="1.6" />
+    <rect x="13" y="4" width="7" height="7" rx="1.6" />
+    <rect x="4" y="13" width="7" height="7" rx="1.6" />
+    <rect x="13" y="13" width="7" height="7" rx="1.6" />
+  </Icon>
+);
+
+export const MinimizeIcon = (p: P) => (
+  <Icon {...p}>
+    <rect x="3.5" y="5" width="13" height="10" rx="2" />
+    <path d="M8 19h12.5M20.5 9v10" />
+  </Icon>
+);

@@ -1,0 +1,265 @@
+/* ---- The mascot (components/Mascot.tsx): the app icon's duck, one class per mood ---- */
+
+.mascot {
+  flex: none;
+  overflow: visible;
+  /* Each mood mounts anew (key in App.tsx) and lands with a small spring. */
+  animation: m-pop var(--t-slow) var(--ease-spring);
+}
+
+.mascot * {
+  transform-box: fill-box;
+}
+
+.m-shadow {
+  fill: rgba(0, 0, 0, 0.32);
+  transform-origin: center;
+}
+
+.m-tail,
+.m-belly,
+.m-skull,
+.m-tuft {
+  fill: #ffd84d;
+}
+
+/* Light along the top of the body and the head, as on the app icon's glossy yellow. */
+.m-belly-shine,
+.m-head-shine {
+  fill: none;
+  stroke: #fff3c4;
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+.m-wing {
+  fill: #f2c230;
+  stroke: #e3ad1c;
+  stroke-width: 0.8;
+  transform-origin: 15% 40%;
+}
+
+.m-beak {
+  fill: #ff9f1c;
+}
+
+.m-beak-low {
+  fill: #e8860c;
+}
+
+.m-cheek {
+  fill: #ff8a7a;
+  opacity: 0.5;
+}
+
+.m-eye circle {
+  fill: #1a1a1a;
+}
+
+.m-eye .m-eye-glint {
+  fill: #fff;
+}
+
+.m-eye {
+  transform-origin: center;
+}
+
+.m-eye-shut {
+  fill: none;
+  stroke: #1a1a1a;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.m-cap path {
+  fill: #7b6cf6;
+}
+
+.m-cap .m-cap-band {
+  fill: #e9e5ff;
+}
+
+.m-pompom {
+  fill: #fff;
+}
+
+.m-pad rect {
+  fill: #2a2833;
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 0.8;
+}
+
+.m-pad-dpad {
+  fill: #cfcbd8;
+}
+
+.m-pad-a {
+  fill: var(--green);
+}
+
+.m-pad-b {
+  fill: var(--danger);
+}
+
+.m-zs text {
+  fill: var(--accent);
+  font-family: inherit;
+  font-weight: 800;
+  opacity: 0;
+}
+
+.m-zs text:nth-child(1) {
+  font-size: 9px;
+}
+.m-zs text:nth-child(2) {
+  font-size: 11px;
+}
+.m-zs text:nth-child(3) {
+  font-size: 13px;
+}
+
+/* Sleeping: slow breath, head drooped into the cap, z's drifting up one after another. */
+
+.mascot.sleeping .m-duck {
+  transform-origin: 50% 100%;
+  animation: m-breathe 3.6s ease-in-out infinite;
+}
+
+.mascot.sleeping .m-head {
+  transform-origin: 30% 90%;
+  transform: rotate(9deg) translateY(2px);
+}
+
+.mascot.sleeping .m-shadow {
+  animation: m-shadow-breathe 3.6s ease-in-out infinite;
+}
+
+.mascot.sleeping .m-zs text {
+  animation: m-z 3.6s ease-out infinite;
+}
+.mascot.sleeping .m-zs text:nth-child(2) {
+  animation-delay: 1.2s;
+}
+.mascot.sleeping .m-zs text:nth-child(3) {
+  animation-delay: 2.4s;
+}
+
+/* Playing: bouncing on the beat, head bobbing, thumbs on the pad, a blink now and then. */
+
+.mascot.playing .m-duck {
+  animation: m-bounce 0.9s var(--ease-out) infinite alternate;
+}
+
+.mascot.playing .m-head {
+  transform-origin: 30% 90%;
+  animation: m-bob 1.8s ease-in-out infinite;
+}
+
+.mascot.playing .m-eye {
+  animation: m-blink 4.2s infinite;
+}
+
+.mascot.playing .m-wing {
+  animation: m-tap 0.45s ease-in-out infinite alternate;
+}
+
+.mascot.playing .m-pad-a {
+  animation: m-press 0.9s steps(1) infinite;
+}
+.mascot.playing .m-pad-b {
+  animation: m-press 0.9s steps(1) 0.45s infinite;
+}
+
+.mascot.playing .m-shadow {
+  animation: m-shadow-bounce 0.9s var(--ease-out) infinite alternate;
+}
+
+@keyframes m-pop {
+  from {
+    transform: scale(0.6) translateY(6px);
+    opacity: 0;
+  }
+}
+
+@keyframes m-breathe {
+  50% {
+    transform: scale(1.025, 1.045);
+  }
+}
+
+@keyframes m-shadow-breathe {
+  50% {
+    transform: scaleX(1.05);
+  }
+}
+
+@keyframes m-z {
+  0% {
+    opacity: 0;
+    transform: translate(0, 6px) scale(0.6);
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(5px, -8px) scale(1);
+  }
+}
+
+@keyframes m-bounce {
+  to {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes m-shadow-bounce {
+  to {
+    transform: scaleX(0.9);
+    opacity: 0.7;
+  }
+}
+
+@keyframes m-bob {
+  0%,
+  100% {
+    transform: rotate(-3deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+
+@keyframes m-blink {
+  0%,
+  93%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
+  }
+}
+
+@keyframes m-tap {
+  to {
+    transform: rotate(-5deg);
+  }
+}
+
+@keyframes m-press {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot,
+  .mascot * {
+    animation: none !important;
+  }
+  .mascot.sleeping .m-zs text {
+    opacity: 0.8;
+  }
+}

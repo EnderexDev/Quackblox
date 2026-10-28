@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, on, type Account, type Game, type User } from "./api";
+import { api, on, type Account, type Client, type Clients, type Game, type User } from "./api";
 import {
   ArrowUpIcon,
   CloseIcon,
-  DuckIcon,
+  GridIcon,
+  LeafIcon,
   LoginIcon,
+  MinimizeIcon,
   MoreIcon,
   PcIcon,
   PlayIcon,
@@ -15,9 +17,12 @@ import {
 } from "./components/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
+import { Mascot } from "./components/Mascot";
 import { checkForUpdate, installUpdate, useUpdate } from "./update";
 import { notify, toast, Toasts } from "./toast";
 import { getLang, setLang, t as texts, useT, type Lang, type Texts } from "./i18n";
+
+const NO_CLIENTS: Clients = { clients: [], eco: [], others: 0 };
 
 const RECENTS_KEY = "quackblox.recents";
 const GAME_KEY = "quackblox.game";
@@ -36,6 +41,12 @@ const readJson = <T,>(key: string, fallback: T): T => {
 const gameArg = (g: Game) => (g.jobId ? `https://www.roblox.com/games/start?placeId=${g.placeId}&gameInstanceId=${g.jobId}` : String(g.placeId));
 const sameGame = (a: Game, b: Game) => a.placeId === b.placeId && a.jobId === b.jobId;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** RAM as Task Manager rounds it: MB below 1 GB, GB with one decimal above. */
+function memory(bytes: number) {
+  const fmt = new Intl.NumberFormat(getLang() === "en" ? "en" : "pt-BR", { maximumFractionDigits: 1 });
+  return bytes < 1024 ** 3 ? `${Math.round(bytes / 1024 ** 2)} MB` : `${fmt.format(bytes / 1024 ** 3)} GB`;
+}
 
 function ago(seconds: number | null, t: Texts) {
   if (!seconds) return t.neverPlayed;
@@ -58,8 +69,10 @@ export default function App() {
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [startup, setStartup] = useState(false);
   const [autoClose, setAutoClose] = useState(true);
-  const [savingAutoClose, setSavingAutoClose] = useState(false);
   const [stuck, setStuck] = useState(false);
+  const [hotkeys, setHotkeys] = useState(true);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [clients, setClients] = useState<Clients>(NO_CLIENTS);
 
   const loadAccounts = useCallback(() => api.accounts().then(setAccounts).catch(toast), []);
   const loadAppAccount = useCallback(
@@ -79,7 +92,11 @@ export default function App() {
 
   useEffect(() => {
     api.startup().then(setStartup);
-    api.settings().then((s) => setAutoClose(s.autoClose));
+    api.settings().then((s) => {
+      setAutoClose(s.autoClose);
+      setHotkeys(s.hotkeys);
+    });
+    api.clients().then(setClients);
     loadAccounts();
     loadAppAccount();
     // An event after the status was read wins over it.
@@ -98,6 +115,8 @@ export default function App() {
         loadAccounts();
       }),
       on.accountError(toast),
+      on.clients(setClients),
+      on.hotkeysFailed((keys) => toast(texts().hotkeysFailed(keys))),
     ];
     // Read only once every listener is in, so nothing that happens in between is missed. A
     // Roblox closed before the window loaded still gets its notice.
@@ -217,13 +236,42 @@ export default function App() {
     if (l === before) return;
     setLang(l);
     api
-      .setSettings({ autoClose, language: l })
+      .setSettings({ autoClose, language: l, hotkeys })
       .then((s) => setLang(s.language))
       .catch((e) => {
         setLang(before);
         toast(e);
       });
   };
+
+  // The window sends every setting each time (settings.rs): the ones not changing go as they are.
+  const saveSettings = (change: { autoClose?: boolean; hotkeys?: boolean }) => {
+    setSavingSettings(true);
+    api
+      .setSettings({ autoClose, hotkeys, language: getLang(), ...change })
+      .then((s) => {
+        setAutoClose(s.autoClose);
+        setHotkeys(s.hotkeys);
+      })
+      .catch(toast)
+      .finally(() => setSavingSettings(false));
+  };
+
+  const clientsOf = (key: string) => clients.clients.filter((c) => c.account === key);
+  const windowsOpen = clients.clients.filter((c) => c.window).length + clients.others;
+  // Shown at once; the answer (and the watcher's next snapshot) confirms it.
+  const toggleEco = (key: string) => {
+    const on = !clients.eco.includes(key);
+    setClients((c) => ({ ...c, eco: on ? [...c.eco, key] : c.eco.filter((k) => k !== key) }));
+    api.setEco(key, on).then(setClients).catch(toast);
+  };
+  const live = (key: string, index: number) => ({
+    clients: clientsOf(key),
+    eco: clients.eco.includes(key),
+    onEco: () => toggleEco(key),
+    onFocus: () => api.focusClient(key).catch(toast),
+    hotkey: hotkeys && index < 9 ? index + 1 : undefined,
+  });
 
   const playable = (appUser ? 1 : 0) + accounts.filter((a) => !a.expired && a.id !== appUser?.id).length;
 
@@ -237,8 +285,11 @@ export default function App() {
       <div className="app">
         <header className="topbar">
           <div className="brand">
-            <DuckIcon size={30} />
-            <span className="brand-name">Quackblox</span>
+            <Mascot key={windowsOpen ? "playing" : "sleeping"} mood={windowsOpen ? "playing" : "sleeping"} size={50} />
+            <div className="brand-text">
+              <span className="brand-name">Quackblox</span>
+              <span className="brand-mood">{windowsOpen ? t.mascotPlaying(windowsOpen) : t.mascotSleeping}</span>
+            </div>
           </div>
           <MultiPill active={multi} autoClose={autoClose} stuck={stuck} />
           <LanguageSwitch onChange={changeLanguage} />
@@ -262,6 +313,19 @@ export default function App() {
               </button>
             </div>
 
+            {windowsOpen > 0 && (
+              <div className="windows-bar">
+                <span className="live-dot" />
+                <span className="windows-count">{t.windowsOpen(windowsOpen)}</span>
+                <button className="pill-btn ghost small" onClick={() => api.grid().then((n) => notify(t.gridDone(n), "info")).catch(toast)} title={t.gridTitle}>
+                  <GridIcon size={15} /> {t.grid}
+                </button>
+                <button className="pill-btn ghost small" disabled={windowsOpen < 2} onClick={() => api.minimizeOthers().catch(toast)} title={t.minimizeOthersTitle}>
+                  <MinimizeIcon size={15} /> {t.minimizeOthers}
+                </button>
+              </div>
+            )}
+
             <div className="cards">
               <AccountCard
                 tag={
@@ -276,6 +340,7 @@ export default function App() {
                 busy={busy.has("app")}
                 canPlay={!!game && !!appUser}
                 onPlay={() => appUser && play("app", appUser.displayName)}
+                {...live("app", 0)}
               />
               {accounts.map((a, i) => (
                 <AccountCard
@@ -288,6 +353,7 @@ export default function App() {
                   canPlay={!!game && !a.expired}
                   onPlay={() => play(String(a.id), a.displayName)}
                   onRelogin={a.expired ? () => api.addAccount().catch(toast) : undefined}
+                  {...live(String(a.id), i + 1)}
                   menu={[
                     ...(i > 0 ? [{ icon: <ArrowUpIcon size={16} />, label: t.moveUp, run: () => moveUp(a, i) }] : []),
                     { icon: <TrashIcon size={16} />, label: t.removeAccount, run: () => remove(a), danger: true },
@@ -313,17 +379,14 @@ export default function App() {
           <label className="footer-toggle" title={t.autoCloseTitle}>
             <Toggle
               on={autoClose}
-              disabled={savingAutoClose}
-              onChange={(v) => {
-                setSavingAutoClose(true);
-                api
-                  .setSettings({ autoClose: v, language: getLang() })
-                  .then((s) => setAutoClose(s.autoClose))
-                  .catch(toast)
-                  .finally(() => setSavingAutoClose(false));
-              }}
+              disabled={savingSettings}
+              onChange={(v) => saveSettings({ autoClose: v })}
             />
             {t.autoClose}
+          </label>
+          <label className="footer-toggle" title={t.hotkeysTitle}>
+            <Toggle on={hotkeys} disabled={savingSettings} onChange={(v) => saveSettings({ hotkeys: v })} />
+            {t.hotkeys}
           </label>
           <UpdateLink />
         </footer>
@@ -503,6 +566,13 @@ function AccountCard(p: {
   onPlay: () => void;
   onRelogin?: () => void;
   menu?: MenuItem[];
+  /** This account's open clients. */
+  clients: Client[];
+  eco: boolean;
+  onEco: () => void;
+  onFocus: () => void;
+  /** N of its Ctrl+Shift+N, when the hotkeys are on. */
+  hotkey?: number;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -517,7 +587,14 @@ function AccountCard(p: {
   return (
     <div className={`card account ${p.missing ? "missing" : ""}`}>
       <div className="account-top">
-        {p.avatar ? <img className="avatar" src={p.avatar} alt="" /> : <span className="avatar empty" />}
+        <span className="avatar-wrap">
+          {p.avatar ? <img className="avatar" src={p.avatar} alt="" /> : <span className="avatar empty" />}
+          {p.hotkey && (
+            <span className="hotkey-chip" title={t.hotkeyChip(p.hotkey)}>
+              {p.hotkey}
+            </span>
+          )}
+        </span>
         {p.tag && <span className="tag">{p.tag}</span>}
         {p.menu && (
           <div className="menu-wrap" ref={ref}>
@@ -542,15 +619,43 @@ function AccountCard(p: {
         {p.user && <span className="muted small">@{p.user.name}</span>}
         <span className={`small ${p.missing ? "warn" : "muted"}`}>{p.sub}</span>
       </div>
-      {p.onRelogin ? (
-        <button className="pill-btn ghost wide" onClick={p.onRelogin}>
-          <LoginIcon size={16} /> {t.signInAgain}
+      {p.clients.length > 0 && <LiveLine clients={p.clients} onFocus={p.onFocus} />}
+      <div className="card-actions">
+        {p.onRelogin ? (
+          <button className="pill-btn ghost wide" onClick={p.onRelogin}>
+            <LoginIcon size={16} /> {t.signInAgain}
+          </button>
+        ) : (
+          <button className="pill-btn wide" disabled={!p.canPlay || p.busy} onClick={p.onPlay}>
+            <PlayIcon size={16} /> {p.busy ? t.opening : t.play}
+          </button>
+        )}
+        <button className={`round-btn eco-btn ${p.eco ? "on" : ""}`} onClick={p.onEco} title={p.eco ? t.ecoOn : t.ecoOff} aria-label={t.ecoLabel} aria-pressed={p.eco}>
+          <LeafIcon size={16} />
         </button>
-      ) : (
-        <button className="pill-btn wide" disabled={!p.canPlay || p.busy} onClick={p.onPlay}>
-          <PlayIcon size={16} /> {p.busy ? t.opening : t.play}
-        </button>
-      )}
+      </div>
     </div>
+  );
+}
+
+/** The open clients of an account: how many, their CPU and RAM summed, a click to bring one forward. */
+function LiveLine({ clients, onFocus }: { clients: Client[]; onFocus: () => void }) {
+  const t = useT();
+  const cpu = clients.reduce((n, c) => n + c.cpu, 0);
+  const ram = clients.reduce((n, c) => n + c.ram, 0);
+  const shown = clients.some((c) => c.window);
+  return (
+    <button className={`live-line ${shown ? "" : "starting"}`} onClick={onFocus} disabled={!shown} title={t.focusWindow}>
+      <span className="live-dot" />
+      <span className="live-label">{clients.length > 1 ? t.openMany(clients.length) : t.openOne}</span>
+      <span className="live-stats">
+        <span className="live-stat">
+          CPU <b>{cpu < 10 ? cpu.toFixed(1) : Math.round(cpu)}%</b>
+        </span>
+        <span className="live-stat">
+          RAM <b>{memory(ram)}</b>
+        </span>
+      </span>
+    </button>
   );
 }
