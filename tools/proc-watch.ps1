@@ -7,6 +7,11 @@ $ms = { [int]((Get-Date) - $t0).TotalMilliseconds }
 $known = @{}
 foreach ($p in Get-Process -ErrorAction SilentlyContinue) { $known[$p.Id] = $true }
 $watch = @{}
+# Roblox players already running (the tray's) are watched too: one may get the game.
+foreach ($p in Get-Process RobloxPlayerBeta -ErrorAction SilentlyContinue) {
+  $watch[$p.Id] = @{ win = ($p.MainWindowHandle -ne 0); title = $p.MainWindowTitle }
+  "      already pid {0} window={1} title '{2}'" -f $p.Id, ($p.MainWindowHandle -ne 0), $p.MainWindowTitle
+}
 "ready"
 while (((Get-Date) - $t0).TotalSeconds -lt $Seconds) {
   foreach ($p in Get-Process -ErrorAction SilentlyContinue) {

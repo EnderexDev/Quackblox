@@ -20,8 +20,8 @@ use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEM
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, GetExitCodeProcess, GetPriorityClass, GetProcessId, GetProcessTimes, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_VM_READ, ProcessPowerThrottling,
-    SetPriorityClass, SetProcessInformation, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
+    ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
@@ -31,6 +31,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 
 const PLAYER_EXE: &str = "RobloxPlayerBeta.exe";
+/// 1601-01-01 to 1970-01-01 in FILETIME's 100 ns units.
+const UNIX_TO_FILETIME: u64 = 116_444_736_000_000_000;
 
 /// A process handle owned by Quackblox, closed with it.
 struct Proc(HANDLE);
@@ -82,6 +84,8 @@ pub struct Clients {
     path: PathBuf,
     list: Mutex<Vec<Client>>,
     eco: Mutex<HashSet<String>>,
+    /// Clients seen ending, newest last: a player process they started is a tray one.
+    gone: Mutex<Vec<u32>>,
 }
 
 /// What the window sees of a client.
@@ -188,6 +192,11 @@ fn window_of(pid: u32) -> Option<HWND> {
 
 /// Every Roblox player process running, opened by Quackblox or not.
 fn player_pids() -> Vec<u32> {
+    player_procs().into_iter().map(|(pid, _)| pid).collect()
+}
+
+/// Every Roblox player process running, with its parent's pid.
+fn player_procs() -> Vec<(u32, u32)> {
     let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else { return vec![] };
     let mut out = vec![];
     let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
@@ -195,7 +204,7 @@ fn player_pids() -> Vec<u32> {
     while more {
         let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
         if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(PLAYER_EXE) {
-            out.push(e.th32ProcessID);
+            out.push((e.th32ProcessID, e.th32ParentProcessID));
         }
         more = unsafe { Process32NextW(snap, &mut e) }.is_ok();
     }
@@ -298,6 +307,31 @@ impl Clients {
         self.save(&list);
     }
 
+    /// Ends the Roblox players left in the tray: the process a client leaves behind when its
+    /// window closes. Measured 28/10/26: with one running, the client a link opens ends at start
+    /// with 0xC0000409 and hands the game to it (a fresh tray process opens it as a window of no
+    /// account) or loses it (one 20 min old did, 5 launches in a row, the site's way too). Only a
+    /// player with no window and of no account, started by a client seen ending or running for
+    /// over 30 s: a client the site just opened has no window yet either. Says how many it ended.
+    pub fn end_tray_players(&self) -> usize {
+        let ours: HashSet<u32> = self.list.lock().unwrap().iter().map(|c| c.pid).collect();
+        let gone = self.gone.lock().unwrap().clone();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| (d.as_nanos() / 100) as u64).unwrap_or(0) + UNIX_TO_FILETIME;
+        let mut ended = 0;
+        for (pid, parent) in player_procs() {
+            if ours.contains(&pid) || window_of(pid).is_some() {
+                continue;
+            }
+            let Ok(h) = (unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { continue };
+            let proc = Proc(h);
+            let tray = gone.contains(&parent) || times(proc.0).is_some_and(|(created, _)| now.saturating_sub(created) > 30 * 10_000_000);
+            if tray && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
+                ended += 1;
+            }
+        }
+        ended
+    }
+
     /// The main window of each client of the account, in launch order.
     fn windows_of(&self, account: &str) -> Vec<HWND> {
         self.list.lock().unwrap().iter().filter(|c| c.account == account).filter_map(|c| c.hwnd.map(hwnd)).collect()
@@ -339,7 +373,7 @@ pub fn start(app: &AppHandle) {
             })
         })
         .collect();
-    let clients = Clients { path, list: Mutex::new(list), eco: Mutex::new(eco) };
+    let clients = Clients { path, list: Mutex::new(list), eco: Mutex::new(eco), gone: Mutex::new(vec![]) };
     clients.save(&clients.list.lock().unwrap());
     app.manage(clients);
 
@@ -350,12 +384,16 @@ pub fn start(app: &AppHandle) {
             std::thread::sleep(Duration::from_secs(1));
             let clients = app.state::<Clients>();
             let mut exited = vec![];
+            let mut eco_gone = vec![];
             {
                 let mut list = clients.list.lock().unwrap();
                 let before = list.len();
                 list.retain_mut(|c| {
                     let h = c.proc.0;
                     if let Some(code) = exit_code(h) {
+                        if c.eco_on {
+                            eco_gone.push(c.pid);
+                        }
                         exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window });
                         return false;
                     }
@@ -383,6 +421,19 @@ pub fn start(app: &AppHandle) {
                 });
                 if list.len() != before {
                     clients.save(&list);
+                }
+                let mut gone = clients.gone.lock().unwrap();
+                gone.extend(exited.iter().map(|e| e.pid));
+                let extra = gone.len().saturating_sub(64);
+                gone.drain(..extra);
+            }
+            // A client closing leaves a player process in the tray, born with its parent's idle
+            // priority (seen 28/10/26): it goes back to normal, so nothing of Roblox stays slow
+            // with no Eco shown on any card.
+            for (pid, _) in player_procs().into_iter().filter(|(_, parent)| eco_gone.contains(parent)) {
+                if let Ok(h) = unsafe { OpenProcess(PROCESS_SET_INFORMATION, false, pid) } {
+                    let child = Proc(h);
+                    set_eco(child.0, false);
                 }
             }
             for e in exited {

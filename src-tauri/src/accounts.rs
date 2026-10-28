@@ -300,6 +300,10 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
             return Err(e);
         }
     };
+    if app.state::<clients::Clients>().end_tray_players() > 0 {
+        // A moment for Windows to finish ending them before the new client looks for them.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
     let process = win::open_link(&roblox::launch_link(&ticket, place_id, job_id.as_deref()))?;
     let name = match saved_id {
         Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.display_name.clone()),
