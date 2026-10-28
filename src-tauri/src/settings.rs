@@ -45,7 +45,11 @@ pub fn settings_get() -> Settings {
 pub fn settings_set(settings: Settings) -> Result<Settings, String> {
     let path = PATH.get().ok_or("configurações ainda não carregaram")?;
     let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| format!("não consegui salvar a configuração: {e}"))?;
+    // Written beside and renamed over: a half-written file would bring auto_close back on.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .map_err(|e| format!("não consegui salvar a configuração: {e}"))?;
     AUTO_CLOSE.store(settings.auto_close, Ordering::Relaxed);
     Ok(current())
 }

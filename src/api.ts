@@ -8,7 +8,7 @@ export type Settings = { autoClose: boolean };
 export type Game = { placeId: number; jobId: string | null; name: string; icon: string | null };
 
 export const api = {
-  multiStatus: () => invoke<boolean>("multi_status"),
+  multiStatus: () => invoke<{ active: boolean; stuck: boolean; closed: number }>("multi_status"),
   closeRobloxNow: () => invoke<void>("multi_close_now"),
   settings: () => invoke<Settings>("settings_get"),
   setSettings: (settings: Settings) => invoke<Settings>("settings_set", { settings }),
@@ -27,6 +27,7 @@ export const api = {
 
 export const on = {
   multi: (f: (active: boolean) => void) => listen<boolean>("multi", (e) => f(e.payload)),
+  multiStuck: (f: () => void) => listen<boolean>("multi-stuck", () => f()),
   robloxClosed: (f: (count: number) => void) => listen<number>("roblox-closed", (e) => f(e.payload)),
   startup: (f: (on: boolean) => void) => listen<boolean>("startup", (e) => f(e.payload)),
   accountAdded: (f: (u: User) => void) => listen<User>("account-added", (e) => f(e.payload)),

@@ -54,6 +54,8 @@ export default function App() {
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [startup, setStartup] = useState(false);
   const [autoClose, setAutoClose] = useState(true);
+  const [savingAutoClose, setSavingAutoClose] = useState(false);
+  const [stuck, setStuck] = useState(false);
 
   const loadAccounts = useCallback(() => api.accounts().then(setAccounts).catch(toast), []);
   const loadAppAccount = useCallback(
@@ -72,13 +74,19 @@ export default function App() {
   );
 
   useEffect(() => {
-    api.multiStatus().then(setMulti);
     api.startup().then(setStartup);
     api.settings().then((s) => setAutoClose(s.autoClose));
     loadAccounts();
     loadAppAccount();
+    // An event after the status was read wins over it.
+    let heard = false;
     const offs = [
-      on.multi(setMulti),
+      on.multi((m) => {
+        heard = true;
+        setMulti(m);
+        if (m) setStuck(false);
+      }),
+      on.multiStuck(() => setStuck(true)),
       on.startup(setStartup),
       on.robloxClosed(() => notify("Fechei o Roblox que estava aberto pra ligar o multi", "info")),
       on.accountAdded((u) => {
@@ -87,6 +95,15 @@ export default function App() {
       }),
       on.accountError(toast),
     ];
+    // Read only once every listener is in, so nothing that happens in between is missed. A
+    // Roblox closed before the window loaded still gets its notice.
+    Promise.all(offs).then(() =>
+      api.multiStatus().then((s) => {
+        if (!heard) setMulti(s.active);
+        setStuck(s.stuck);
+        if (s.closed > 0) notify("Fechei o Roblox que estava aberto pra ligar o multi", "info");
+      }),
+    );
     // The app's login, and the tray's "start with Windows", can change while the window is hidden.
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
@@ -204,7 +221,7 @@ export default function App() {
             <DuckIcon size={30} />
             <span className="brand-name">Quackblox</span>
           </div>
-          <MultiPill active={multi} autoClose={autoClose} />
+          <MultiPill active={multi} autoClose={autoClose} stuck={stuck} />
         </header>
 
         <main className="panel page">
@@ -274,7 +291,18 @@ export default function App() {
             Iniciar com o Windows
           </label>
           <label className="footer-toggle" title="Quando um Roblox aberto antes do Quackblox trava o multi, ele é fechado sozinho">
-            <Toggle on={autoClose} onChange={(v) => api.setSettings({ autoClose: v }).then((s) => setAutoClose(s.autoClose)).catch(toast)} />
+            <Toggle
+              on={autoClose}
+              disabled={savingAutoClose}
+              onChange={(v) => {
+                setSavingAutoClose(true);
+                api
+                  .setSettings({ autoClose: v })
+                  .then((s) => setAutoClose(s.autoClose))
+                  .catch(toast)
+                  .finally(() => setSavingAutoClose(false));
+              }}
+            />
             Fechar sozinho o Roblox que trava o multi
           </label>
           <span className="muted small">Fechar a janela deixa o Quackblox na bandeja, com o multi ligado.</span>
@@ -285,13 +313,15 @@ export default function App() {
   );
 }
 
-function MultiPill({ active, autoClose }: { active: boolean | null; autoClose: boolean }) {
+function MultiPill({ active, autoClose, stuck }: { active: boolean | null; autoClose: boolean; stuck: boolean }) {
   if (active === null) return null;
+  // Closing on its own: unless that already failed, then the button is back.
+  const closing = autoClose && !stuck;
   return (
     <div className={`multi-pill ${active ? "on" : "wait"}`} title={active ? "Cada Roblox aberto pelo Quackblox ou pelo site abre ao lado dos outros" : "Um Roblox aberto antes do Quackblox está segurando a trava"}>
       <span className="dot" />
-      {active ? "Multi ligado" : autoClose ? "Fechando o Roblox aberto..." : "Um Roblox aberto está travando o multi"}
-      {!active && !autoClose && (
+      {active ? "Multi ligado" : closing ? "Fechando o Roblox aberto..." : stuck ? "Não consegui fechar o que trava o multi" : "Um Roblox aberto está travando o multi"}
+      {!active && !closing && (
         <button className="pill-link" onClick={() => api.closeRobloxNow().catch(toast)}>
           Fechar agora
         </button>
@@ -300,9 +330,9 @@ function MultiPill({ active, autoClose }: { active: boolean | null; autoClose: b
   );
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+function Toggle({ on, onChange, disabled = false }: { on: boolean; onChange: (on: boolean) => void; disabled?: boolean }) {
   return (
-    <button role="switch" aria-checked={on} className={`toggle ${on ? "on" : ""}`} onClick={() => onChange(!on)}>
+    <button role="switch" aria-checked={on} className={`toggle ${on ? "on" : ""}`} disabled={disabled} onClick={() => onChange(!on)}>
       <span className="toggle-knob" />
     </button>
   );
