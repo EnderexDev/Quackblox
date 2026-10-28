@@ -226,36 +226,53 @@ fn extract(offset: u64, len: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Writes `bytes` to `path` and runs them as NSIS, the file held so nothing can change or delete
-/// it in between: reopened sharing only reading (Windows still runs it), then checked against `bytes`.
-fn install_from(path: &Path, bytes: &[u8], flags: &[&str], dir: &Path) -> Result<(), String> {
+/// Writes `bytes` to a new file at `path` and hands back a handle that holds it: created new
+/// (it fails on anything put there first) and written shared for reading only, then reopened
+/// without following links (a link swapped in is refused), shared for reading only, so nothing
+/// can write, rename or delete it while the handle lives (Windows still runs it), and checked
+/// against `bytes`. On any failure the file is gone.
+fn write_held(path: &Path, bytes: &[u8]) -> Result<File, String> {
     use std::io::Write;
     use std::os::windows::fs::OpenOptionsExt;
-    // Created new (it fails on a file someone put there first) and shared for reading only while
-    // written, so no other handle can write to it in that time either.
-    let created = std::fs::OpenOptions::new().write(true).create_new(true).share_mode(0x1).open(path);
-    let mut file = created.map_err(|e| format!("não consegui gravar o instalador: {e}"))?;
-    if let Err(e) = file.write_all(bytes) {
-        // Ours (created new above): a half-written copy is not left in TEMP.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let held = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0x1)
+            .open(path)
+            .map_err(|e| format!("não consegui gravar o arquivo: {e}"))?;
+        file.write_all(bytes).map_err(|e| format!("não consegui gravar o arquivo: {e}"))?;
         drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(format!("não consegui gravar o instalador: {e}"));
-    }
-    drop(file);
-    let result = (|| {
-        // FILE_SHARE_READ only: no writing or deleting while this handle lives.
         let mut held = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(0x1)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
-            .map_err(|e| format!("não consegui abrir o instalador: {e}"))?;
-        let mut on_disk = Vec::with_capacity(bytes.len());
-        held.read_to_end(&mut on_disk).map_err(|e| format!("não consegui ler o instalador: {e}"))?;
-        if on_disk != bytes {
-            return Err("o instalador mudou no disco antes de rodar".to_string());
+            .map_err(|e| format!("não consegui abrir o arquivo: {e}"))?;
+        let meta = held.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Err("o arquivo virou um atalho antes de rodar".to_string());
         }
-        run_nsis(path, flags, dir)
+        let mut on_disk = Vec::with_capacity(bytes.len());
+        held.read_to_end(&mut on_disk).map_err(|e| format!("não consegui ler o arquivo: {e}"))?;
+        if on_disk != bytes {
+            return Err("o arquivo mudou no disco antes de rodar".to_string());
+        }
+        Ok(held)
     })();
+    if held.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    held
+}
+
+/// Writes `bytes` to `path` and runs them as NSIS, the file held from the check to the end of
+/// the run (write_held), then deleted.
+fn install_from(path: &Path, bytes: &[u8], flags: &[&str], dir: &Path) -> Result<(), String> {
+    let held = write_held(path, bytes)?;
+    let result = run_nsis(path, flags, dir);
+    drop(held);
     let _ = std::fs::remove_file(path);
     result
 }
@@ -363,29 +380,19 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
 /// From the app: hands the update to a copy of this exe in the temp folder and quits.
 #[tauri::command]
 pub fn update_in_window(app: AppHandle) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::windows::fs::OpenOptionsExt;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("sem pasta de instalação")?.to_path_buf();
-    // A new file by a name nobody can guess ahead (no link planted there to follow), shared
-    // for reading only while written; clean_up deletes it after the update.
+    // A name nobody can guess ahead, held from the check until the copy has started
+    // (write_held); clean_up deletes it after the update.
     let copy = std::env::temp_dir().join(format!("{UPDATER_PREFIX}{}.exe", uuid::Uuid::new_v4()));
     let bytes = std::fs::read(&exe).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .share_mode(0x1)
-        .open(&copy)
-        .and_then(|mut f| f.write_all(&bytes))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&copy);
-            format!("não consegui copiar o Quackblox pra atualizar: {e}")
-        })?;
-    Command::new(&copy)
-        .arg(UPDATE_ARG)
-        .arg(&dir)
-        .spawn()
-        .map_err(|e| format!("não consegui iniciar a atualização: {e}"))?;
+    let held = write_held(&copy, &bytes).map_err(|e| format!("não consegui copiar o Quackblox pra atualizar: {e}"))?;
+    let started = Command::new(&copy).arg(UPDATE_ARG).arg(&dir).spawn();
+    drop(held);
+    if let Err(e) = started {
+        let _ = std::fs::remove_file(&copy);
+        return Err(format!("não consegui iniciar a atualização: {e}"));
+    }
     crate::desktop::quit(&app);
     Ok(())
 }
@@ -399,7 +406,9 @@ pub fn clean_up() {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             // "Quackblox-Updater.exe": the fixed name 0.2.0 and 0.2.1 used.
-            if (name.starts_with(UPDATER_PREFIX) && name.ends_with(".exe")) || name == "Quackblox-Updater.exe" {
+            // Also the NSIS copies an install or update killed midway left behind.
+            let ours = [UPDATER_PREFIX, "Quackblox-Install-", "Quackblox-Update-"].iter().any(|p| name.starts_with(p));
+            if (ours && name.ends_with(".exe")) || name == "Quackblox-Updater.exe" {
                 let _ = std::fs::remove_file(e.path());
             }
         }
