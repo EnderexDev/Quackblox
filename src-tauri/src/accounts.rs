@@ -296,7 +296,7 @@ pub struct Joined {
 #[tauri::command]
 pub fn client_server(app: AppHandle, account: String) -> Option<Joined> {
     let (created, user) = app.state::<clients::Clients>().newest_of(&account)?;
-    let log = crate::logs::of(user, created)?;
+    let log = crate::logs::of(user, created, None)?;
     let (place_id, job_id) = crate::logs::server_in(&log)?;
     Some(Joined { place_id, job_id })
 }
@@ -409,10 +409,14 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
     // The Roblox app's login changes under it: each client opened writes its own account there
     // (seen 28/10/26, the app's card went from Enderexx_1 to EnderexDev and back as each played).
     // So the app's account is read with the login used now, for the title and the client's log.
-    if saved_id.is_none() {
-        if let Ok(user) = roblox::user_of(&cookie).await {
-            *APP_USER.lock().unwrap() = Some(user);
-        }
+    // None when it could not be read: a client with no account is better than one with the
+    // account last cached, which may be another.
+    let app_user = match saved_id {
+        Some(_) => None,
+        None => roblox::user_of(&cookie).await.ok(),
+    };
+    if let Some(user) = &app_user {
+        *APP_USER.lock().unwrap() = Some(user.clone());
     }
     let (ticket, rotated) = roblox::ticket(&cookie).await;
     // Roblox may have retired the old login with this answer, even a failed one: the new one is
@@ -450,9 +454,9 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
     let process = win::open_link(&roblox::launch_link(&ticket, &place))?;
     let name = match saved_id {
         Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.display_name.clone()),
-        None => APP_USER.lock().unwrap().as_ref().map(|u| u.display_name.clone()),
+        None => app_user.as_ref().map(|u| u.display_name.clone()),
     };
-    let user = user_id(&account);
+    let user = saved_id.or(app_user.as_ref().map(|u| u.id));
     match process {
         Some(p) => app.state::<clients::Clients>().add(p, &account, name.as_deref().unwrap_or("Roblox"), user),
         None => eprintln!("accounts: the link opened no process of its own, the client is not tied to {account}"),

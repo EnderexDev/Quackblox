@@ -31,7 +31,8 @@ fn started(name: &str) -> Option<u64> {
 /// The log of the client that started at this time (Unix seconds) as this account: the player
 /// log that started closest to it, within 10 s, whose join line names the account when it
 /// has one. None when Roblox wrote no log for it (a client that ended at once writes none).
-pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
+/// `next`: when a later client of the same user started, if one is known; a log from then on is its.
+pub fn of(user_id: Option<u64>, created: u64, next: Option<u64>) -> Option<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
     for entry in std::fs::read_dir(dir()?).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -43,7 +44,7 @@ pub fn of(user_id: Option<u64>, created: u64) -> Option<PathBuf> {
         // started at 21:38:30.7 opened its log at 21:38:34. The join line's account tells two
         // accounts apart; two clients of the same account opened under 10 s apart can still
         // swap logs (the Play button stays busy 4 s after a click).
-        if start + 1 < created || start > created + 10 {
+        if start + 1 < created || start > created + 10 || next.is_some_and(|n| start >= n) {
             continue;
         }
         let gap = start.abs_diff(created);
@@ -128,17 +129,19 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
     #[test]
     #[ignore]
     fn finds_a_real_log() {
-        let log = of(Some(3845602757), 1_793_218_314).expect("log");
+        let log = of(Some(3845602757), 1_793_218_314, None).expect("log");
         assert!(log.to_string_lossy().contains("20261028T201155Z"));
         assert_eq!(server_in(&log), Some((94717504417144, "5cdd7bda-9174-447f-97f1-e4ef40c6d8c0".into())));
-        assert!(of(Some(87918968), 1_793_218_314).is_none(), "another account's log");
-        assert!(of(Some(3845602757), 1_793_218_314 - 10).is_none(), "a launch 10 s earlier that wrote no log");
+        assert!(of(Some(87918968), 1_793_218_314, None).is_none(), "another account's log");
+        assert!(of(Some(3845602757), 1_793_218_314 - 10, None).is_none(), "a launch 10 s earlier that wrote no log");
         assert_eq!(reason_in(&log), None, "killed, so it wrote no reason");
         // 19:14:53Z: a window closed by him.
-        let closed = of(Some(3845602757), 1_793_214_893).expect("log");
+        let closed = of(Some(3845602757), 1_793_214_893, None).expect("log");
         assert_eq!(reason_in(&closed), Some(285));
         // A client started at 21:38:30.7 whose log opened at 21:38:34, joined by JobId.
-        let late = of(Some(3845602757), 1_793_223_510).expect("log opened 4 s after the process");
+        let late = of(Some(3845602757), 1_793_223_510, None).expect("log opened 4 s after the process");
         assert_eq!(server_in(&late), Some((1818, "f612cf45-0dd5-4241-8e87-6ffde87d877c".into())));
+        // A later client of the same user started at 21:38:33: the log at :34 is that one's.
+        assert!(of(Some(3845602757), 1_793_223_510, Some(1_793_223_513)).is_none());
     }
 }

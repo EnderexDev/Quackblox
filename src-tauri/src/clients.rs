@@ -409,12 +409,14 @@ pub fn start(app: &AppHandle) {
                 return None;
             }
             let eco_on = eco.contains(&l.account);
+            // Links saved before the user was kept: a saved account's key is its user id.
+            let user = l.user.or(l.account.parse().ok());
             Some(Client {
                 pid: l.pid,
                 created,
                 account: l.account,
                 name: l.name,
-                user: l.user,
+                user,
                 proc,
                 hwnd: None,
                 had_window: false,
@@ -496,9 +498,14 @@ pub fn start(app: &AppHandle) {
             }
             // The log is read off this thread: a long session's log is megabytes.
             for mut e in exited {
+                // A later client of the same user that is still open: its log is not this one's.
+                let next = {
+                    let list = clients.list.lock().unwrap();
+                    list.iter().filter(|c| c.user.is_some() && c.user == e.user && c.created > e.created).map(|c| unix(c.created)).min()
+                };
                 let app = app.clone();
                 std::thread::spawn(move || {
-                    e.reason = crate::logs::of(e.user, unix(e.created)).and_then(|p| crate::logs::reason_in(&p));
+                    e.reason = crate::logs::of(e.user, unix(e.created), next).and_then(|p| crate::logs::reason_in(&p));
                     let _ = app.emit("client-exited", e);
                 });
             }
