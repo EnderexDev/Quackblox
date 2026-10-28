@@ -248,10 +248,13 @@ async fn wait_for_seat(app: &AppHandle, key: &str, name: &str, place_id: u64, jo
         if let Some(s) = &seat {
             emit(app, Step { playing: s.playing(), max: s.max_players(), ..Step::new(key, name, "seat") });
         }
-        tokio::time::sleep(SEAT_EVERY).await;
-        if !still() {
-            emit(app, Step::new(key, name, "stopped"));
-            return false;
+        // Looked at each second, so a stop lets the card go at once.
+        for _ in 0..SEAT_EVERY.as_secs() {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if !still() {
+                emit(app, Step::new(key, name, "stopped"));
+                return false;
+            }
         }
     }
     unreachable!()
