@@ -133,6 +133,13 @@ fn times(h: HANDLE) -> Option<(u64, u64)> {
     Some((filetime(c), filetime(k) + filetime(u)))
 }
 
+/// When an ended process ended, from Windows itself.
+fn exit_time(h: HANDLE) -> Option<u64> {
+    let (mut c, mut e, mut k, mut u) = Default::default();
+    unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) }.ok()?;
+    Some(filetime(e))
+}
+
 /// Now as a FILETIME, the clock process creation times use.
 fn now_filetime() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| (d.as_nanos() / 100) as u64).unwrap_or(0) + UNIX_TO_FILETIME
@@ -407,6 +414,7 @@ pub fn start(app: &AppHandle) {
             let clients = app.state::<Clients>();
             let mut exited = vec![];
             let mut eco_gone = vec![];
+            let mut ended_at = vec![];
             {
                 let mut list = clients.list.lock().unwrap();
                 let before = list.len();
@@ -416,6 +424,8 @@ pub fn start(app: &AppHandle) {
                         if c.eco_on {
                             eco_gone.push(c.pid);
                         }
+                        // The real end, not this look's: a pid reused in between must not count.
+                        ended_at.push((c.pid, exit_time(h).unwrap_or_else(now_filetime)));
                         exited.push(Exited { pid: c.pid, account: c.account.clone(), code, had_window: c.had_window });
                         return false;
                     }
@@ -445,8 +455,7 @@ pub fn start(app: &AppHandle) {
                     clients.save(&list);
                 }
                 let mut gone = clients.gone.lock().unwrap();
-                let at = now_filetime();
-                gone.extend(exited.iter().map(|e| (e.pid, at)));
+                gone.extend(ended_at);
                 let extra = gone.len().saturating_sub(64);
                 gone.drain(..extra);
             }
@@ -644,6 +653,20 @@ mod tests {
         }
         let _ = unsafe { CloseHandle(snap) };
         found
+    }
+
+    #[test]
+    fn exit_time_is_when_the_process_ended() {
+        use std::os::windows::io::AsRawHandle;
+        let before = now_filetime();
+        let mut child = std::process::Command::new("cmd").args(["/c", "exit 0"]).spawn().unwrap();
+        child.wait().unwrap();
+        // Read a while after the end: the time must still be the end's, not the reading's.
+        std::thread::sleep(Duration::from_millis(600));
+        let ended = exit_time(HANDLE(child.as_raw_handle())).unwrap();
+        let read_at = now_filetime();
+        assert!(ended >= before, "ended before the start");
+        assert!(read_at - ended >= 5_000_000, "exit time is the reading time, not the end");
     }
 
     #[test]
