@@ -360,7 +360,12 @@ pub async fn capture_print(app: tauri::AppHandle, account: Option<String>) -> Re
         let path = dir.join(if n == 1 { format!("Quackblox {stamp}.jpg") } else { format!("Quackblox {stamp} ({n}).jpg") });
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut f) => {
-                std::io::Write::write_all(&mut f, &bytes).map_err(|e| tr!("não consegui salvar o print: {e}", "couldn't save the print: {e}"))?;
+                if let Err(e) = std::io::Write::write_all(&mut f, &bytes) {
+                    // A half-written picture is not left in the folder.
+                    drop(f);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(tr!("não consegui salvar o print: {e}", "couldn't save the print: {e}"));
+                }
                 return Ok(path.display().to_string());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

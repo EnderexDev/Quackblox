@@ -185,7 +185,7 @@ pub fn apply(app: &AppHandle) {
                     let app = app.clone();
                     std::thread::spawn(move || {
                         let _ = stream.set_nonblocking(false);
-                        handle(&app, stream, peer.ip());
+                        handle(&app, stream, peer.ip(), generation);
                         OPEN.fetch_sub(1, Ordering::SeqCst);
                     });
                 }
@@ -353,8 +353,12 @@ fn authorized(app: &AppHandle, req: &Request, ip: IpAddr) -> Result<(), &'static
     Err("401 Unauthorized")
 }
 
-fn handle(app: &AppHandle, mut stream: TcpStream, ip: IpAddr) {
+fn handle(app: &AppHandle, mut stream: TcpStream, ip: IpAddr, generation: u64) {
     let Some(req) = read_request(&mut stream) else { return };
+    // Turned off while this request came in: nothing runs.
+    if GENERATION.load(Ordering::SeqCst) != generation {
+        return;
+    }
     if req.method == "GET" && (req.path == "/" || req.path == "/index.html") {
         let page = PAGE.replace("/*TEXTS*/null", &texts().to_string()).replace("__LANG__", if crate::settings::english() { "en" } else { "pt" });
         // The page runs only its own script, and sends nothing to any other address.
@@ -721,7 +725,8 @@ fn follow(app: &AppHandle, account: String, target: String) -> Result<String, St
             return notice(tr!("não sei em que servidor {} está", "I don't know which server {} is in", name_of(&app2, &target)));
         };
         let game = format!("https://www.roblox.com/games/start?placeId={place}&gameInstanceId={job}");
-        let name = app2.state::<Clients>().last_game(&target).and_then(|g| game_name(&app2, &g));
+        // Only a name already known: otherwise `reopen` looks the server's game up, once.
+        let name = app2.state::<Clients>().last_game(&target).and_then(|g| known_name(&app2, &g));
         let _ = reopen(&app2, account, game, name);
     });
     Ok(tr!("indo pro servidor...", "going to the server..."))

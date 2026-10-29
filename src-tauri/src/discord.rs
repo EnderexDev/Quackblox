@@ -39,35 +39,67 @@ impl Pipe {
         frame.extend_from_slice(&(data.len() as u32).to_le_bytes());
         frame.extend_from_slice(data.as_bytes());
         self.0.write_all(&frame)?;
+        loop {
+            let (op, reply) = self.read_frame()?;
+            match op {
+                // 2 is Discord closing the pipe, with the reason.
+                2 => return Err(std::io::Error::other(String::from_utf8_lossy(&reply).to_string())),
+                // 3 is a ping: answered with a pong (4) carrying the same data; the answer is still
+                // to come.
+                3 => self.write_frame(4, &reply)?,
+                _ => return Ok(serde_json::from_slice(&reply).unwrap_or(serde_json::Value::Null)),
+            }
+        }
+    }
+
+    fn read_frame(&mut self) -> std::io::Result<(u32, Vec<u8>)> {
         let mut head = [0u8; 8];
         self.0.read_exact(&mut head)?;
         let len = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
         if len > 1 << 20 {
             return Err(std::io::Error::other("frame too big"));
         }
-        let mut reply = vec![0u8; len];
-        self.0.read_exact(&mut reply)?;
-        let op = u32::from_le_bytes(head[0..4].try_into().unwrap());
-        // 2 is Discord closing the pipe, with the reason.
-        if op == 2 {
-            return Err(std::io::Error::other(String::from_utf8_lossy(&reply).to_string()));
-        }
-        Ok(serde_json::from_slice(&reply).unwrap_or(serde_json::Value::Null))
+        let mut data = vec![0u8; len];
+        self.0.read_exact(&mut data)?;
+        Ok((u32::from_le_bytes(head[0..4].try_into().unwrap()), data))
+    }
+
+    fn write_frame(&mut self, op: u32, data: &[u8]) -> std::io::Result<()> {
+        let mut frame = Vec::with_capacity(8 + data.len());
+        frame.extend_from_slice(&op.to_le_bytes());
+        frame.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        frame.extend_from_slice(data);
+        self.0.write_all(&frame)
+    }
+
+    /// `send` with a time limit: a Discord that stopped answering never holds the presence thread.
+    /// The pipe comes back only when it answered; a stuck one stays with its own thread, which lets
+    /// it go when Discord closes it.
+    fn send_within(mut self, op: u32, body: serde_json::Value) -> Option<(Pipe, std::io::Result<serde_json::Value>)> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let r = self.send(op, &body);
+            let _ = tx.send((self, r));
+        });
+        rx.recv_timeout(Duration::from_secs(5)).ok()
     }
 
     fn handshake() -> Option<Pipe> {
-        let mut p = Pipe::open()?;
-        p.send(0, &json!({ "v": 1, "client_id": CLIENT_ID })).ok()?;
+        let (p, r) = Pipe::open()?.send_within(0, json!({ "v": 1, "client_id": CLIENT_ID }))?;
+        r.ok()?;
         Some(p)
     }
 
-    fn activity(&mut self, activity: serde_json::Value) -> std::io::Result<()> {
+    /// Sets the activity; the pipe comes back when it worked.
+    fn activity(self, activity: serde_json::Value) -> std::io::Result<Pipe> {
         let nonce = uuid::Uuid::new_v4().to_string();
-        let reply = self.send(1, &json!({ "cmd": "SET_ACTIVITY", "args": { "pid": std::process::id(), "activity": activity }, "nonce": nonce }))?;
+        let body = json!({ "cmd": "SET_ACTIVITY", "args": { "pid": std::process::id(), "activity": activity }, "nonce": nonce });
+        let (p, reply) = self.send_within(1, body).ok_or_else(|| std::io::Error::other("no answer from Discord in 5 s"))?;
+        let reply = reply?;
         if reply.get("evt").and_then(|e| e.as_str()) == Some("ERROR") {
             return Err(std::io::Error::other(reply.to_string()));
         }
-        Ok(())
+        Ok(p)
     }
 }
 
@@ -80,6 +112,7 @@ fn now_playing(app: &AppHandle, names: &mut HashMap<String, (String, Option<Stri
         return serde_json::Value::Null;
     }
     let mut games: Vec<(String, Option<String>)> = vec![];
+    let mut places = vec![];
     for c in &playing {
         // A failed lookup is not kept: the game is asked again a minute later.
         if !names.contains_key(&c.game) && failed.get(&c.game).is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
@@ -93,7 +126,11 @@ fn now_playing(app: &AppHandle, names: &mut HashMap<String, (String, Option<Stri
             }
         }
         let Some(entry) = names.get(&c.game) else { continue };
-        if !entry.0.is_empty() && !games.iter().any(|g| g.0 == entry.0) {
+        // One game per place, whatever server each account is in; two games of the same name still
+        // count as two.
+        let place = crate::roblox::parse_game(&c.game).map(|p| p.place_id);
+        if !entry.0.is_empty() && !places.contains(&place) {
+            places.push(place);
             games.push(entry.clone());
         }
     }
@@ -145,15 +182,13 @@ pub fn start(app: AppHandle) {
                 if pipe.is_none() && !want.is_null() {
                     pipe = Pipe::handshake();
                 }
-                match pipe.as_mut().map(|p| p.activity(want.clone())) {
-                    Some(Ok(())) => {
+                match pipe.take().map(|p| p.activity(want.clone())) {
+                    Some(Ok(p)) => {
+                        pipe = Some(p);
                         shown = want.clone();
                         sent = std::time::Instant::now();
                     }
-                    Some(Err(e)) => {
-                        eprintln!("discord: presence not set: {e}");
-                        pipe = None;
-                    }
+                    Some(Err(e)) => eprintln!("discord: presence not set: {e}"),
                     // Discord closed: nothing shows there anyway.
                     None => shown = serde_json::Value::Null,
                 }
