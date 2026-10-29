@@ -159,7 +159,10 @@ pub async fn transfer_import(app: AppHandle, password: String) -> Result<Option<
             }
         }
     }
-    (out.groups, out.profiles, out.favorites, out.slots) = crate::organize::merge(&app, payload.lists)?;
+    (out.groups, out.profiles, out.favorites, out.slots) = crate::organize::merge(&app, payload.lists).inspect_err(|_| {
+        // The accounts are in already: the window shows them even when the lists failed.
+        let _ = app.emit("accounts-changed", ());
+    })?;
     app.state::<crate::clients::Clients>().merge_prefs(payload.prefs);
     let _ = app.emit("accounts-changed", ());
     Ok(Some(out))

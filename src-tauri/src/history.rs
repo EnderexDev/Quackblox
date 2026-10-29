@@ -28,6 +28,9 @@ pub struct Entry {
 struct Store {
     path: PathBuf,
     list: Vec<Entry>,
+    /// False when drops.json exists but could be neither read nor moved aside: it is never written
+    /// over, so the history in it is not lost.
+    writable: bool,
 }
 
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
@@ -37,22 +40,31 @@ fn with<T>(app: &AppHandle, f: impl FnOnce(&mut Store) -> T) -> T {
     let store = guard.get_or_insert_with(|| {
         let dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
         let path = dir.join("drops.json");
+        let mut writable = true;
         let list = match std::fs::read_to_string(&path) {
-            Err(_) => vec![],
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+            Err(e) => {
+                eprintln!("history: drops.json not read ({e}), left as it is");
+                writable = false;
+                vec![]
+            }
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
                 // Kept aside, so the next drop never writes over the history in it.
                 let aside = path.with_extension(format!("broken-{}.json", crate::win::unix_now()));
                 eprintln!("history: drops.json unreadable ({e}), moved to {}", aside.display());
-                let _ = std::fs::rename(&path, &aside);
+                writable = std::fs::rename(&path, &aside).is_ok();
                 vec![]
             }),
         };
-        Store { path, list }
+        Store { path, list, writable }
     });
     f(store)
 }
 
 fn save(store: &Store) {
+    if !store.writable {
+        return;
+    }
     let Ok(text) = serde_json::to_string(&store.list) else { return };
     let tmp = store.path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &store.path)) {
