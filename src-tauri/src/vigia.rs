@@ -122,6 +122,10 @@ fn why(f: &Fall) -> String {
 }
 
 pub fn fell(app: &AppHandle, f: Fall) {
+    crate::history::add(
+        app,
+        crate::history::Entry { at: crate::win::unix_now(), account: f.account.clone(), user: f.user, name: f.name.clone(), kind: f.kind.into(), reason: f.reason, game: f.game.clone() },
+    );
     let on = on(app, &f);
     let key = tries_key(&f.account, f.user);
     let mut no_rejoin = None;
@@ -154,6 +158,8 @@ pub fn fell(app: &AppHandle, f: Fall) {
         text += &tr!(" Não vou entrar de novo: {n}.", " Not going back in: {n}.");
     }
     alert(app, &text);
+    // The phone page beeps and shakes for this one (phone.html), while it is open.
+    crate::phone::alarm(text);
     if let Some((count, run)) = plan {
         let app = app.clone();
         tauri::async_runtime::spawn(async move { rejoin(app, f, key, count, run).await });
@@ -273,6 +279,27 @@ async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>, still: &(dyn Fn(
         take_from(user);
     }
     played
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RamHigh {
+    account: String,
+    name: String,
+    mb: u64,
+    reopen: bool,
+}
+
+/// A client's memory stayed over the limit for a minute (clients.rs): told once, and opened again
+/// when he asked for that.
+pub fn ram_high(app: &AppHandle, account: &str, name: &str, mb: u64, limit: u32, reopen: bool) {
+    let mut text = tr!("{name} está usando {mb} MB de memória (limite {limit} MB).", "{name} is using {mb} MB of memory (limit {limit} MB).");
+    if reopen {
+        text += &tr!(" Abrindo de novo no mesmo jogo.", " Opening it again in the same game.");
+    }
+    alert(app, &text);
+    crate::phone::notice(text);
+    let _ = app.emit("client-ram", RamHigh { account: account.into(), name: name.into(), mb, reopen });
 }
 
 /// A notice off the window: Windows' own, and Discord's when he turned it on.

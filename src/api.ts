@@ -3,7 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type User = { id: number; name: string; displayName: string };
-export type Account = User & { lastPlayed: number | null; expired: boolean };
+/** `nickname`: his name for it, shown in place of the display name (empty for none); `color`: one of `COLORS`, or empty. */
+export type Account = User & { lastPlayed: number | null; expired: boolean; nickname: string; color: string };
+/** The colors an account can have, the same list as accounts.rs. */
+export const COLORS = ["#ffcc33", "#fb923c", "#f87171", "#f472b6", "#a78bfa", "#38bdf8", "#4ade80", "#94a3b8"];
 /** The window sends them all each time (settings.rs). `discordWebhook` is his own channel's key. */
 export type Settings = {
   autoClose: boolean;
@@ -17,6 +20,10 @@ export type Settings = {
   phone: boolean;
   /** Discord's "Playing Quackblox" (discord.rs). */
   richPresence: boolean;
+  /** A client over this many MB for a minute is told; 0 is off. */
+  ramLimitMb: number;
+  /** And opened again in the same game. */
+  ramReopen: boolean;
 };
 /** The phone page: `links` (the home network's and Tailscale's) carry the pairing key after '#'. */
 export type PhoneInfo = { on: boolean; listening: boolean; port: number; error: string | null; links: { kind: "lan" | "tailscale"; url: string; qr: string }[] };
@@ -24,8 +31,9 @@ export type PhoneInfo = { on: boolean; listening: boolean; port: number; error: 
 export type ClientState = "starting" | "inGame" | "dropped" | "joinFailed";
 /** A Roblox client Quackblox opened. `account` is "app" or a saved account's id, as in `play`. */
 export type Client = { pid: number; account: string; cpu: number; ram: number; window: boolean; state: ClientState; reason: number | null };
-/** `others`: Roblox windows open that Quackblox did not open. `rejoin`: accounts that go back in by themselves. */
-export type Clients = { clients: Client[]; eco: string[]; rejoin: string[]; others: number };
+/** `others`: Roblox windows open that Quackblox did not open. `rejoin`: accounts that go back in by themselves.
+ * `restart`: hours between restarts, by account. `places`: the accounts with a saved window place. */
+export type Clients = { clients: Client[]; eco: string[]; rejoin: string[]; mute: string[]; restart: Record<string, number>; places: string[]; others: number };
 /** `reason`: why it left its last server, from its log (Roblox's error code; 285 is leaving on purpose). */
 export type ClientExited = {
   pid: number;
@@ -40,8 +48,15 @@ export type ClientExited = {
 export type ClientFell = { account: string; name: string; reason: number | null; kind: "dropped" | "crashed" | "joinFailed"; rejoinIn: number | null; noRejoin: string | null };
 /** `error`: null when the client opened again. */
 export type ClientRejoin = { account: string; name: string; error: string | null };
-/** Seconds in game by user id, then by place id; counted since `since` (Unix seconds). */
-export type Stats = { since: number; users: Record<string, Record<string, number>> };
+/** Seconds in game by user id, then by place id; counted since `since` (Unix seconds). `days`: seconds by
+ * local day (YYYY-MM-DD), then by user id. */
+export type Stats = { since: number; users: Record<string, Record<string, number>>; days: Record<string, Record<string, number>> };
+/** A drop the watch told, newest first. `at`: Unix seconds. */
+export type DropEntry = { at: number; account: string; user: number | null; name: string; kind: "dropped" | "crashed" | "joinFailed"; reason: number | null; game: string };
+/** A client closed and opened again: every N hours ("hours") or for its memory ("ram"). */
+export type ClientRestart = { account: string; name: string; why: "hours" | "ram"; error: string | null };
+/** What an accounts file brought in. */
+export type Imported = { added: number; updated: number; groups: number; profiles: number; favorites: number; slots: number };
 /** `jobId`: a server picked; `linkCode`: a private server. */
 export type Game = { placeId: number; jobId: string | null; linkCode?: string | null; name: string; icon: string | null };
 export type Presence = { userId: number; kind: "offline" | "site" | "game" | "studio"; location: string; placeId: number | null; jobId: string | null };
@@ -66,9 +81,12 @@ export type LaunchStep = {
 };
 export type Group = { id: string; name: string; accounts: string[] };
 export type Profile = { id: string; name: string; game: Game; accounts: string[]; eco: string[]; grid: boolean; sameServer: boolean };
-/** `minute`: after midnight, the PC's time. `days`: 0 for Sunday; empty for every day. `last`: the day it last ran. */
-export type Slot = { id: string; profile: string; minute: number; days: number[]; on: boolean; last: string };
-export type Lists = { groups: Group[]; profiles: Profile[]; schedule: Slot[] };
+/** `minute`: after midnight, the PC's time. `days`: 0 for Sunday; empty for every day. `last`: the day it last ran.
+ * `action`: open the profile's accounts, or close them. */
+export type Slot = { id: string; profile: string; minute: number; days: number[]; on: boolean; last: string; action: "open" | "close" };
+/** A private server he keeps, with a name of his. */
+export type Favorite = { id: string; name: string; game: Game };
+export type Lists = { groups: Group[]; profiles: Profile[]; schedule: Slot[]; favorites: Favorite[] };
 
 export const api = {
   multiStatus: () => invoke<{ active: boolean; stuck: boolean; closed: number }>("multi_status"),
@@ -79,6 +97,7 @@ export const api = {
   addAccount: () => invoke<void>("accounts_add"),
   removeAccount: (id: number) => invoke<void>("accounts_remove", { id }),
   moveAccount: (id: number, to: number) => invoke<void>("accounts_move", { id, to }),
+  setLabel: (id: number, nickname: string, color: string) => invoke<void>("accounts_set_label", { id, nickname, color }),
   appAccount: () => invoke<User>("app_account"),
   avatars: (ids: number[]) => invoke<[number, string][]>("avatars", { ids }),
   game: (input: string) => invoke<Game>("game_info", { input }),
@@ -96,6 +115,21 @@ export const api = {
   clients: () => invoke<Clients>("clients_get"),
   setEco: (account: string, on: boolean) => invoke<Clients>("clients_set_eco", { account, on }),
   setRejoin: (account: string, on: boolean) => invoke<Clients>("clients_set_rejoin", { account, on }),
+  setMute: (account: string, on: boolean) => invoke<Clients>("clients_set_mute", { account, on }),
+  /** 0 turns it off. */
+  setRestart: (account: string, hours: number) => invoke<Clients>("clients_set_restart", { account, hours }),
+  /** Keeps where the account's window is now as its place. */
+  savePlace: (account: string) => invoke<Clients>("clients_save_place", { account }),
+  forgetPlace: (account: string) => invoke<Clients>("clients_forget_place", { account }),
+  /** Says how many windows it moved. */
+  applyPlaces: () => invoke<number>("clients_apply_places"),
+  /** Says how many clients it closed. */
+  closeClients: (accounts: string[]) => invoke<number>("clients_close", { accounts }),
+  history: () => invoke<DropEntry[]>("history_get"),
+  clearHistory: () => invoke<void>("history_clear"),
+  /** Says where it saved; null when he closed the dialog. */
+  exportAccounts: (password: string) => invoke<string | null>("transfer_export", { password }),
+  importAccounts: (password: string) => invoke<Imported | null>("transfer_import", { password }),
   testDiscord: (webhook: string) => invoke<void>("vigia_test_discord", { webhook }),
   testWindows: () => invoke<void>("vigia_test_windows"),
   /** The names of the logins that turned out expired. */
@@ -142,6 +176,10 @@ export const on = {
   clientExited: (f: (c: ClientExited) => void) => listen<ClientExited>("client-exited", (e) => f(e.payload)),
   clientFell: (f: (c: ClientFell) => void) => listen<ClientFell>("client-fell", (e) => f(e.payload)),
   clientRejoin: (f: (c: ClientRejoin) => void) => listen<ClientRejoin>("client-rejoin", (e) => f(e.payload)),
+  clientRestart: (f: (c: ClientRestart) => void) => listen<ClientRestart>("client-restart", (e) => f(e.payload)),
+  /** A client's memory stayed over the limit for a minute. */
+  clientRam: (f: (c: { account: string; name: string; mb: number; reopen: boolean }) => void) =>
+    listen<{ account: string; name: string; mb: number; reopen: boolean }>("client-ram", (e) => f(e.payload)),
   launch: (f: (s: LaunchStep) => void) => listen<LaunchStep>("launch", (e) => f(e.payload)),
   /** A schedule slot just ran (its id): the window reads the lists again for its last day. */
   scheduleRan: (f: (id: string) => void) => listen<string>("schedule-ran", (e) => f(e.payload)),

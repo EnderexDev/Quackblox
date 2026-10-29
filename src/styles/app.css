@@ -801,6 +801,124 @@
   font-variant-numeric: tabular-nums;
 }
 
+.mute-btn.on {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  color: var(--danger);
+}
+
+.mute-btn.on:not(:disabled):hover {
+  background: color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
+}
+
+/* An account with a color of his: a strip on the card's left edge and a dot by the name. */
+.card.account.colored {
+  box-shadow: inset 3px 0 0 var(--acc);
+}
+
+.color-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--acc);
+  vertical-align: 1px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--surface-3);
+}
+
+.swatch.none {
+  background: repeating-linear-gradient(45deg, var(--surface-3) 0 3px, transparent 3px 6px);
+}
+
+.swatch.on {
+  border-color: var(--text);
+}
+
+.pill-btn.danger {
+  color: var(--danger);
+}
+
+.ram-limit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ram-limit input {
+  width: 72px;
+}
+
+.history-row {
+  grid-template-columns: 92px minmax(0, 1fr) minmax(0, 2fr);
+}
+
+.hours-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chart {
+  width: 100%;
+  height: auto;
+  max-height: 190px;
+}
+
+.chart-grid {
+  stroke: var(--surface-3);
+  stroke-width: 1;
+}
+
+.chart-axis {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+/* accent-2: the light theme's accent is too pale on its surface for a mark. */
+.chart-bar {
+  fill: var(--accent-2);
+}
+
+.chart-bar.on {
+  fill: var(--accent);
+}
+
+.chart-readout {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
 .eco-btn.on {
   background: color-mix(in srgb, var(--green) 22%, transparent);
   color: var(--green);

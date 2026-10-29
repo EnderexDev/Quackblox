@@ -29,6 +29,10 @@ pub struct Settings {
     pub phone: bool,
     /// Discord's "Playing Quackblox" with the game (discord.rs). Off by default too.
     pub rich_presence: bool,
+    /// A client's memory over this many MB for a minute is told (clients.rs); 0 is off.
+    pub ram_limit_mb: u32,
+    /// And that client is closed and opened again in the same game.
+    pub ram_reopen: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +47,8 @@ impl Default for Settings {
             login_check: false,
             phone: false,
             rich_presence: false,
+            ram_limit_mb: 0,
+            ram_reopen: false,
         }
     }
 }
@@ -96,6 +102,9 @@ pub fn settings_set(app: AppHandle, mut settings: Settings) -> Result<Settings, 
             "esse não é um endereço de webhook do Discord (começa com https://discord.com/api/webhooks/)",
             "that isn't a Discord webhook address (it starts with https://discord.com/api/webhooks/)"
         ));
+    }
+    if settings.ram_limit_mb != 0 && !(500..=32768).contains(&settings.ram_limit_mb) {
+        return Err(tr!("o limite de memória vai de 500 a 32768 MB", "the memory limit goes from 500 to 32768 MB"));
     }
     if settings.alert_discord && settings.discord_webhook.is_empty() {
         return Err(tr!("cola o endereço do webhook antes de ligar o aviso no Discord", "paste the webhook address before turning on the Discord notice"));

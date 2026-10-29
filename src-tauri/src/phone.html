@@ -51,6 +51,8 @@
   .tile .muted { margin-top: 4px; }
   .placeholder { aspect-ratio: 4 / 3; display: grid; place-items: center; text-align: center; padding: 12px; background: #000; border-radius: 10px; color: var(--muted); font-size: 13px; }
   .notice { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .color { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  #toast div.alarm { border-color: var(--bad); background: #3a1d1d; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -68,7 +70,11 @@
     <select id="game"></select>
     <input id="link" hidden autocomplete="off" autocapitalize="off" spellcheck="false">
     <label class="check" id="sameRow" hidden><input type="checkbox" id="same"><span data-t="sameServer"></span></label>
-    <div class="row" style="margin-top:12px"><button class="primary" id="go" data-t="go"></button></div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="go" data-t="go"></button><button class="danger" id="closeWho" data-t="closeWho"></button><span class="grow"></span><button class="danger" id="closeAll" data-t="closeAll"></button></div>
+  </div>
+  <div class="card">
+    <div class="row"><button id="sound"></button></div>
+    <p class="notice" data-t="soundHint"></p>
   </div>
 
   <div class="row"><h2 data-t="accounts" class="grow"></h2><button id="wallBtn" data-t="wall"></button><button id="printAll" data-t="printAll"></button></div>
@@ -90,6 +96,7 @@ const LIVE_MS = 300;
 const WALL_MS = 1000;
 const POLL_MS = 3000;
 const KEY_NAME = "quackblox.key";
+const SOUND_NAME = "quackblox.sound";
 
 if (location.hash.length > 1) {
   localStorage.setItem(KEY_NAME, decodeURIComponent(location.hash.slice(1)));
@@ -104,9 +111,53 @@ document.querySelectorAll("[data-t]").forEach((el) => (el.textContent = T[el.dat
 function toast(text, bad) {
   const d = document.createElement("div");
   d.textContent = text;
-  if (bad) d.className = "bad";
+  if (bad) d.className = bad === "alarm" ? "alarm" : "bad";
   $("toast").appendChild(d);
-  setTimeout(() => d.remove(), 4500);
+  setTimeout(() => d.remove(), bad === "alarm" ? 12000 : 4500);
+}
+
+// ---- the drop alarm: a beep and a shake, only while this page is open ----
+// Browsers play a sound only after a tap on the page: the button makes the audio there, and the
+// choice is kept for the next visit (which needs one tap again).
+let audio = null;
+function soundWanted() {
+  return localStorage.getItem(SOUND_NAME) === "1";
+}
+function soundButton() {
+  const on = soundWanted() && audio && audio.state === "running";
+  $("sound").textContent = on ? T.soundOn : T.soundOff;
+  $("sound").classList.toggle("on", !!on);
+}
+$("sound").onclick = async () => {
+  if (soundWanted() && audio && audio.state === "running") {
+    localStorage.setItem(SOUND_NAME, "0");
+  } else {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    await audio.resume().catch(() => {});
+    localStorage.setItem(SOUND_NAME, "1");
+    beep();
+  }
+  soundButton();
+};
+function beep() {
+  if (!audio || audio.state !== "running") return;
+  const now = audio.currentTime;
+  for (const [at, freq] of [[0, 880], [0.25, 660], [0.5, 880]]) {
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, now + at);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + at + 0.2);
+    osc.connect(gain).connect(audio.destination);
+    osc.start(now + at);
+    osc.stop(now + at + 0.22);
+  }
+}
+function alarm(text) {
+  toast(text, "alarm");
+  if (soundWanted()) beep();
+  if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
 }
 
 async function api(path, body) {
@@ -154,7 +205,7 @@ async function poll() {
     const s = await res.json();
     for (const n of s.notices) {
       // The ones from before this page opened are not news.
-      if (!firstPoll) toast(n.text);
+      if (!firstPoll) n.alarm ? alarm(n.text) : toast(n.text);
       lastNotice = Math.max(lastNotice, n.id);
     }
     firstPoll = false;
@@ -246,6 +297,15 @@ $("go").addEventListener("click", () => {
   act("/api/play", { kind, id, game, sameServer: $("same").checked });
 });
 
+$("closeWho").addEventListener("click", () => {
+  const [kind, ...rest] = $("who").value.split(":");
+  const id = rest.join(":");
+  if (!id) return;
+  const label = $("who").options[$("who").selectedIndex].textContent;
+  confirm(fill(T.confirmCloseWho, { name: label })) && act("/api/close", { kind, id });
+});
+$("closeAll").addEventListener("click", () => confirm(T.confirmCloseAll) && act("/api/close", { kind: "all" }));
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -265,9 +325,10 @@ function accountCard(a) {
   const live = el("button", "", T.live);
   const print = el("button", "", T.print);
   const eco = el("button", "", T.eco);
+  const mute = el("button", "", T.mute);
   const rejoin = el("button", "", T.rejoin);
   const close = el("button", "danger", T.close);
-  rowA.append(live, print, eco, rejoin, close);
+  rowA.append(live, print, eco, mute, rejoin, close);
   const rowB = el("div", "row");
   const gameSel = el("select");
   const switchBtn = el("button", "", T.switchGame);
@@ -282,7 +343,8 @@ function accountCard(a) {
   live.onclick = () => openLive(a.key, nm());
   print.onclick = () => openPrint("/api/print?account=" + encodeURIComponent(a.key), nm());
   eco.onclick = () => act("/api/eco", { account: a.key, on: !eco.classList.contains("on") });
-  close.onclick = () => confirm(fill(T.confirmClose, { name: nm() })) && act("/api/close", { account: a.key });
+  mute.onclick = () => act("/api/mute", { account: a.key, on: !mute.classList.contains("on") });
+  close.onclick = () => confirm(fill(T.confirmClose, { name: nm() })) && act("/api/close", { kind: "account", id: a.key });
   rejoin.onclick = () => confirm(fill(T.confirmRejoin, { name: nm() })) && act("/api/rejoin", { account: a.key });
   switchBtn.onclick = () => {
     const g = gameSel.value;
@@ -296,13 +358,19 @@ function accountCard(a) {
     const label = followSel.options[followSel.selectedIndex].textContent;
     confirm(fill(T.confirmFollow, { name: nm(), target: label })) && act("/api/follow", { account: a.key, target: t });
   };
-  card._parts = { name, handle, st, live, print, eco, rejoin, close, gameSel, switchBtn, followSel, followBtn };
+  card._parts = { name, handle, st, live, print, eco, mute, rejoin, close, gameSel, switchBtn, followSel, followBtn };
   return card;
 }
 
 function updateCard(card, a) {
   const p = card._parts;
-  p.name.textContent = a.name;
+  p.name.textContent = "";
+  if (a.color) {
+    const dot = el("span", "color");
+    dot.style.background = a.color;
+    p.name.append(dot);
+  }
+  p.name.append(a.name);
   const c = a.clients[0];
   p.st.className = "state " + (c ? c.state : "");
   p.st.textContent = c
@@ -316,6 +384,7 @@ function updateCard(card, a) {
   p.close.disabled = !c;
   p.rejoin.disabled = a.expired;
   p.eco.classList.toggle("on", a.eco);
+  p.mute.classList.toggle("on", a.mute);
   p.switchBtn.disabled = a.expired;
   setOptions(p.gameSel, (sel) => gameOptions(sel, false));
   const others = state.accounts.filter((o) => o.key !== a.key && o.clients.length);
@@ -424,6 +493,7 @@ async function openPrint(path, title) {
 }
 $("printAll").onclick = () => openPrint("/api/print", T.printAll);
 
+soundButton();
 poll();
 setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
 document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && poll());

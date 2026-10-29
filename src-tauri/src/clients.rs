@@ -6,7 +6,9 @@
 // code. Its log is read as Roblox writes it: the join, and a drop, which leaves the client open
 // with an error dialog (measured 28/10/26), are seen while it runs; vigia.rs acts on a drop. The
 // links live in clients.json, so a Quackblox restarted (an update) finds the clients still open.
-use std::collections::HashSet;
+// Phase 6 added per account: the mute (audio.rs), a restart every N hours, the window's own place,
+// and a notice when a client's memory stays high.
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -44,6 +46,10 @@ const UNSURE_GRACE: Duration = Duration::from_secs(60);
 const JOIN_LIMIT: u64 = 120;
 /// How long after its start a client's log is looked for: it opens about 3 s in.
 const LOG_LIMIT: u64 = 60;
+/// How long a client's memory stays over the limit before it is told: a loading screen's peak is not.
+const RAM_HOLD: Duration = Duration::from_secs(60);
+/// How often the mute is set again on the clients (a client shows in the mixer only once it plays a sound).
+const MUTE_EVERY: Duration = Duration::from_secs(2);
 /// 1601-01-01 to 1970-01-01 in FILETIME's 100 ns units.
 const UNIX_TO_FILETIME: u64 = 116_444_736_000_000_000;
 
@@ -105,6 +111,22 @@ struct Client {
     at: Instant,
     cpu: f32,
     ram: u64,
+    /// Its window was put in the account's saved place (or it had none to go to).
+    placed: bool,
+    /// Since when its memory is over the limit, and whether that was told.
+    ram_high: Option<Instant>,
+    ram_told: bool,
+    /// Being closed to open again (every N hours, or its memory): asked once.
+    restarting: bool,
+}
+
+/// A window's place and size on the screen, as Windows gives it (the outer frame).
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct Spot {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -129,6 +151,12 @@ struct File {
     eco: Vec<String>,
     /// Accounts that go back in by themselves when they drop (vigia.rs).
     rejoin: Vec<String>,
+    /// Accounts with their sound off (audio.rs).
+    mute: Vec<String>,
+    /// Accounts closed and opened again in the same game every N hours in a game.
+    restart: HashMap<String, u32>,
+    /// Where each account's window goes when it shows.
+    places: HashMap<String, Spot>,
 }
 
 pub struct Clients {
@@ -136,6 +164,12 @@ pub struct Clients {
     list: Mutex<Vec<Client>>,
     eco: Mutex<HashSet<String>>,
     rejoin: Mutex<HashSet<String>>,
+    mute: Mutex<HashSet<String>>,
+    restart: Mutex<HashMap<String, u32>>,
+    places: Mutex<HashMap<String, Spot>>,
+    /// The mute was used: from then on every client's sound is set, on or off. Before it, a sound
+    /// he turned off himself in the mixer is left alone.
+    mute_used: std::sync::atomic::AtomicBool,
     /// Clients seen ending (pid, when, as a FILETIME), newest last: a player process one of
     /// them started before it ended is a tray one. The time keeps a reused pid from counting.
     gone: Mutex<Vec<(u32, u64)>>,
@@ -169,6 +203,11 @@ pub struct Snapshot {
     clients: Vec<ClientInfo>,
     eco: Vec<String>,
     rejoin: Vec<String>,
+    mute: Vec<String>,
+    /// Hours between restarts, by account.
+    restart: HashMap<String, u32>,
+    /// The accounts with a saved window place.
+    places: Vec<String>,
     /// Roblox player windows Quackblox did not open (the site's Play button, the app's own icon).
     others: usize,
 }
@@ -389,6 +428,9 @@ impl Clients {
                 .collect(),
             eco: self.eco.lock().unwrap().iter().cloned().collect(),
             rejoin: self.rejoin.lock().unwrap().iter().cloned().collect(),
+            mute: self.mute.lock().unwrap().iter().cloned().collect(),
+            restart: self.restart.lock().unwrap().clone(),
+            places: self.places.lock().unwrap().clone(),
         };
         let Ok(text) = serde_json::to_string_pretty(&file) else { return };
         let tmp = self.path.with_extension("json.tmp");
@@ -415,6 +457,9 @@ impl Clients {
                 .collect(),
             eco: self.eco.lock().unwrap().iter().cloned().collect(),
             rejoin: self.rejoin.lock().unwrap().iter().cloned().collect(),
+            mute: self.mute.lock().unwrap().iter().cloned().collect(),
+            restart: self.restart.lock().unwrap().clone(),
+            places: self.places.lock().unwrap().keys().cloned().collect(),
             others,
         }
     }
@@ -460,6 +505,10 @@ impl Clients {
             at: Instant::now(),
             cpu: 0.0,
             ram: 0,
+            placed: false,
+            ram_high: None,
+            ram_told: false,
+            restarting: false,
         });
         self.save(&list);
     }
@@ -581,10 +630,93 @@ impl Clients {
         self.eco.lock().unwrap().contains(account)
     }
 
+    pub fn mute_on(&self, account: &str) -> bool {
+        self.mute.lock().unwrap().contains(account)
+    }
+
+    /// The accounts with a client open, each once.
+    pub fn accounts_open(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.list.lock().unwrap().iter().map(|c| c.account.clone()).collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    /// A new name for the account's open clients (its nickname changed): their titles follow at
+    /// the next look.
+    pub fn rename(&self, account: &str, name: &str) {
+        let mut list = self.list.lock().unwrap();
+        let mut changed = false;
+        for c in list.iter_mut().filter(|c| c.account == account && c.name != name) {
+            c.name = name.to_string();
+            changed = true;
+        }
+        if changed {
+            self.save(&list);
+        }
+    }
+
+    /// Turns the mute of an account on or off; its clients follow at the next look.
+    pub fn set_mute(&self, account: &str, on: bool) {
+        {
+            let mut mute = self.mute.lock().unwrap();
+            if on { mute.insert(account.to_string()) } else { mute.remove(account) };
+        }
+        self.mute_used.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.save(&self.list.lock().unwrap());
+    }
+
+    /// Ends the clients of each account given. Says how many clients it ended and how many are
+    /// still running. Blocks up to 3 s a client: call it off the async runtime.
+    pub fn end_accounts(&self, accounts: &[String]) -> (usize, usize) {
+        let before = self.list.lock().unwrap().iter().filter(|c| accounts.contains(&c.account)).count();
+        let left: usize = accounts.iter().map(|a| self.end_account(a)).sum();
+        (before.saturating_sub(left), left)
+    }
+
+    /// The per-account switches of phase 6, for carrying them to another PC (transfer.rs).
+    pub fn prefs(&self) -> Prefs {
+        Prefs {
+            eco: self.eco.lock().unwrap().iter().cloned().collect(),
+            rejoin: self.rejoin.lock().unwrap().iter().cloned().collect(),
+            mute: self.mute.lock().unwrap().iter().cloned().collect(),
+            restart: self.restart.lock().unwrap().clone(),
+            places: self.places.lock().unwrap().clone(),
+        }
+    }
+
+    /// Takes the switches of the accounts in `prefs` (another PC's), leaving the others as they are.
+    pub fn merge_prefs(&self, prefs: Prefs) {
+        self.eco.lock().unwrap().extend(prefs.eco);
+        self.rejoin.lock().unwrap().extend(prefs.rejoin);
+        if !prefs.mute.is_empty() {
+            self.mute.lock().unwrap().extend(prefs.mute);
+            self.mute_used.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.restart.lock().unwrap().extend(prefs.restart);
+        self.places.lock().unwrap().extend(prefs.places);
+        self.save(&self.list.lock().unwrap());
+    }
+}
+
+/// The per-account switches, as another PC gets them.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    pub eco: Vec<String>,
+    pub rejoin: Vec<String>,
+    pub mute: Vec<String>,
+    pub restart: HashMap<String, u32>,
+    pub places: HashMap<String, Spot>,
+}
+
+impl Clients {
+
     /// Ends every client of the account, each marked as ended by Quackblox (no drop told, no
-    /// rejoin). Says how many are still running after. Blocks up to 3 s a client: call it off
-    /// the async runtime.
+    /// rejoin: one still waiting to start is called off). Says how many are still running after.
+    /// Blocks up to 3 s a client: call it off the async runtime.
     pub fn end_account(&self, account: &str) -> usize {
+        crate::vigia::cancel(account);
         let pids: Vec<u32> = self.list.lock().unwrap().iter().filter(|c| c.account == account).map(|c| c.pid).collect();
         for &pid in &pids {
             self.end(pid);
@@ -615,6 +747,8 @@ pub fn start(app: &AppHandle) {
     let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_VM_READ | PROCESS_TERMINATE;
     let eco: HashSet<String> = file.eco.into_iter().collect();
     let rejoin: HashSet<String> = file.rejoin.into_iter().collect();
+    let mute: HashSet<String> = file.mute.into_iter().collect();
+    let mute_used = !mute.is_empty();
     let list: Vec<Client> = file
         .links
         .into_iter()
@@ -650,6 +784,11 @@ pub fn start(app: &AppHandle) {
                 at: Instant::now(),
                 cpu: 0.0,
                 ram: 0,
+                // Already where he left it: a restart of Quackblox does not move it back.
+                placed: true,
+                ram_high: None,
+                ram_told: false,
+                restarting: false,
             })
         })
         .collect();
@@ -659,6 +798,10 @@ pub fn start(app: &AppHandle) {
         list: Mutex::new(list),
         eco: Mutex::new(eco),
         rejoin: Mutex::new(rejoin),
+        mute: Mutex::new(mute),
+        restart: Mutex::new(file.restart),
+        places: Mutex::new(file.places),
+        mute_used: std::sync::atomic::AtomicBool::new(mute_used),
         gone: Mutex::new(vec![]),
         starts: Mutex::new(starts),
         last_games: Mutex::new(std::collections::HashMap::new()),
@@ -669,9 +812,21 @@ pub fn start(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+        crate::audio::init_thread();
+        let mut muted_at = Instant::now() - MUTE_EVERY;
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let clients = app.state::<Clients>();
+            let settings = crate::settings::current();
+            let ram_limit = settings.ram_limit_mb as u64 * 1024 * 1024;
+            let restart = clients.restart.lock().unwrap().clone();
+            let places = clients.places.lock().unwrap().clone();
+            let mute = clients.mute.lock().unwrap().clone();
+            let mute_used = clients.mute_used.load(std::sync::atomic::Ordering::Relaxed);
+            let mut sound = vec![];
+            let mut to_place = vec![];
+            let mut to_restart: Vec<(String, String, String, &'static str)> = vec![];
+            let mut ram_high = vec![];
             let mut exited = vec![];
             let mut eco_gone = vec![];
             let mut ended_at = vec![];
@@ -767,6 +922,24 @@ pub fn start(app: &AppHandle) {
                     if let Some(w) = c.hwnd {
                         c.had_window = true;
                         ensure_title(hwnd(w), &c.name);
+                        if !c.placed {
+                            c.placed = true;
+                            if let Some(spot) = places.get(&c.account) {
+                                to_place.push((w, *spot));
+                            }
+                        }
+                    }
+                    if mute_used {
+                        sound.push((c.pid, mute.contains(&c.account)));
+                    }
+                    // Every N hours in a game, counted from its start: never while it joins or sits
+                    // on a drop's dialog (the watch has that one).
+                    if let Some(&hours) = restart.get(&c.account) {
+                        let age = now.saturating_sub(started);
+                        if hours > 0 && c.state == State::InGame && !c.restarting && !c.game.is_empty() && age >= hours as u64 * 3600 {
+                            c.restarting = true;
+                            to_restart.push((c.account.clone(), c.name.clone(), c.game.clone(), "hours"));
+                        }
                     }
                     // Kept applied: another tool (or the game's own launcher) may put the priority back.
                     if c.eco_on && unsafe { GetPriorityClass(h) } != IDLE_PRIORITY_CLASS.0 {
@@ -781,6 +954,21 @@ pub fn start(app: &AppHandle) {
                         c.at = Instant::now();
                     }
                     c.ram = ram(h);
+                    if ram_limit > 0 && c.ram > ram_limit {
+                        if c.ram_high.get_or_insert_with(Instant::now).elapsed() >= RAM_HOLD && !c.ram_told {
+                            c.ram_told = true;
+                            ram_high.push((c.account.clone(), c.name.clone(), c.ram));
+                            if settings.ram_reopen && !c.restarting && !c.game.is_empty() {
+                                c.restarting = true;
+                                to_restart.push((c.account.clone(), c.name.clone(), c.game.clone(), "ram"));
+                            }
+                        }
+                    } else if ram_limit == 0 || c.ram < ram_limit / 10 * 9 {
+                        // Told again only after it came well down: a client that hovers at the limit
+                        // is told once.
+                        c.ram_high = None;
+                        c.ram_told = false;
+                    }
                     true
                 });
                 if list.len() != before {
@@ -801,6 +989,24 @@ pub fn start(app: &AppHandle) {
                         set_eco(child.0, false);
                     }
                 }
+            }
+            if !sound.is_empty() && muted_at.elapsed() >= MUTE_EVERY {
+                muted_at = Instant::now();
+                crate::audio::apply(&sound);
+            }
+            for (w, spot) in to_place {
+                // Off this thread: it waits for Roblox to settle the window.
+                std::thread::spawn(move || place(hwnd(w), spot));
+            }
+            for (account, name, bytes) in ram_high {
+                crate::vigia::ram_high(&app, &account, &name, bytes / (1024 * 1024), settings.ram_limit_mb, settings.ram_reopen);
+            }
+            // Each account once, even with two clients due.
+            to_restart.sort_by(|a, b| a.0.cmp(&b.0));
+            to_restart.dedup_by(|a, b| a.0 == b.0);
+            for (account, name, game, why) in to_restart {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { crate::launch::restart(&app, account, name, game, why).await });
             }
             crate::stats::add(&app, &in_game);
             for (account, user) in joined {
@@ -986,6 +1192,106 @@ pub fn grid(app: &AppHandle) -> Result<usize, String> {
         let _ = unsafe { SetWindowPos(win, Some(HWND_TOP), x - l, y - t, 0, 0, SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_NOSIZE) };
     }
     Ok(n)
+}
+
+/// Puts a client's window in its account's place. Roblox sets its own size a moment after the
+/// window shows, so the place is set, looked at 3 s later, and set again if it moved.
+fn place(win: HWND, spot: Spot) {
+    std::thread::sleep(Duration::from_millis(1500));
+    for _ in 0..3 {
+        if !unsafe { IsWindow(Some(win)) }.as_bool() {
+            return;
+        }
+        if unsafe { IsIconic(win) }.as_bool() || unsafe { IsZoomed(win) }.as_bool() {
+            let _ = unsafe { ShowWindowAsync(win, SW_RESTORE) };
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let _ = unsafe { SetWindowPos(win, None, spot.x, spot.y, spot.w, spot.h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS) };
+        std::thread::sleep(Duration::from_secs(3));
+        let mut r = RECT::default();
+        let _ = unsafe { GetWindowRect(win, &mut r) };
+        if (r.left - spot.x).abs() <= 2 && (r.top - spot.y).abs() <= 2 && (r.right - r.left - spot.w).abs() <= 2 && (r.bottom - r.top - spot.h).abs() <= 2 {
+            return;
+        }
+    }
+}
+
+/// The account's window where it is now, to keep as its place. Refused when it has no window, or
+/// the window is minimized or maximized (no place of its own to keep).
+fn spot_of(clients: &Clients, account: &str) -> Result<Spot, String> {
+    let win = clients.windows_of(account).into_iter().next().ok_or_else(|| tr!("essa conta não tem Roblox aberto", "that account has no Roblox open"))?;
+    if unsafe { IsIconic(win) }.as_bool() || unsafe { IsZoomed(win) }.as_bool() {
+        return Err(tr!(
+            "a janela está minimizada ou maximizada: deixa ela do tamanho que quer e tenta de novo",
+            "the window is minimized or maximized: give it the size you want and try again"
+        ));
+    }
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(win, &mut r) }.map_err(|e| e.to_string())?;
+    Ok(Spot { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top })
+}
+
+/// Keeps where the account's window is now as its place: its next clients open there.
+#[tauri::command]
+pub fn clients_save_place(clients: tauri::State<Clients>, account: String) -> Result<Snapshot, String> {
+    let spot = spot_of(&clients, &account)?;
+    clients.places.lock().unwrap().insert(account, spot);
+    clients.save(&clients.list.lock().unwrap());
+    Ok(clients.snapshot(others(&clients)))
+}
+
+/// Forgets the account's window place: its clients open where Roblox puts them.
+#[tauri::command]
+pub fn clients_forget_place(clients: tauri::State<Clients>, account: String) -> Snapshot {
+    clients.places.lock().unwrap().remove(&account);
+    clients.save(&clients.list.lock().unwrap());
+    clients.snapshot(others(&clients))
+}
+
+/// Puts every open window of an account with a place in it now. Says how many.
+#[tauri::command]
+pub fn clients_apply_places(clients: tauri::State<Clients>) -> usize {
+    let places = clients.places.lock().unwrap().clone();
+    let mut n = 0;
+    for (account, spot) in places {
+        for w in clients.windows_of(&account) {
+            let raw = w.0 as isize;
+            std::thread::spawn(move || place(hwnd(raw), spot));
+            n += 1;
+        }
+    }
+    n
+}
+
+#[tauri::command]
+pub fn clients_set_mute(clients: tauri::State<Clients>, account: String, on: bool) -> Snapshot {
+    clients.set_mute(&account, on);
+    clients.snapshot(others(&clients))
+}
+
+/// Hours between restarts of the account in the same game; 0 turns it off.
+#[tauri::command]
+pub fn clients_set_restart(clients: tauri::State<Clients>, account: String, hours: u32) -> Result<Snapshot, String> {
+    if hours > 72 {
+        return Err(tr!("no máximo 72 horas", "72 hours at most"));
+    }
+    {
+        let mut restart = clients.restart.lock().unwrap();
+        if hours == 0 { restart.remove(&account) } else { restart.insert(account, hours) };
+    }
+    clients.save(&clients.list.lock().unwrap());
+    Ok(clients.snapshot(others(&clients)))
+}
+
+/// Closes the clients of the accounts given (a group, a profile, or every one open). Says how
+/// many clients it closed.
+#[tauri::command]
+pub async fn clients_close(app: AppHandle, accounts: Vec<String>) -> Result<usize, String> {
+    let (closed, left) = tauri::async_runtime::spawn_blocking(move || app.state::<Clients>().end_accounts(&accounts)).await.map_err(|e| e.to_string())?;
+    if left > 0 {
+        return Err(tr!("{closed} fechado(s), mas {left} Roblox não fechou", "{closed} closed, but {left} Roblox didn't close"));
+    }
+    Ok(closed)
 }
 
 /// The invisible resize border Windows 11 draws around a window (left, top, right, bottom): the

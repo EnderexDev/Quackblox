@@ -27,7 +27,24 @@ struct Saved {
     last_played: Option<u64>,
     #[serde(default)]
     expired: bool,
+    /// His own name for the account (phase 6), shown in place of the display name; empty for none.
+    #[serde(default)]
+    nickname: String,
+    /// One of `COLORS`, or empty.
+    #[serde(default)]
+    color: String,
 }
+
+impl Saved {
+    /// The name the cards, the window titles, the notices and the phone use.
+    fn label(&self) -> String {
+        if self.nickname.is_empty() { self.display_name.clone() } else { self.nickname.clone() }
+    }
+}
+
+/// The colors an account can have, the same swatches in the window (App.tsx).
+pub const COLORS: [&str; 8] = ["#ffcc33", "#fb923c", "#f87171", "#f472b6", "#a78bfa", "#38bdf8", "#4ade80", "#94a3b8"];
+const NICKNAME_MAX: usize = 24;
 
 /// What the window sees of an account: never the login.
 #[derive(Clone, Serialize)]
@@ -38,11 +55,21 @@ pub struct Account {
     display_name: String,
     last_played: Option<u64>,
     expired: bool,
+    nickname: String,
+    color: String,
 }
 
 impl From<&Saved> for Account {
     fn from(s: &Saved) -> Self {
-        Account { id: s.id, name: s.name.clone(), display_name: s.display_name.clone(), last_played: s.last_played, expired: s.expired }
+        Account {
+            id: s.id,
+            name: s.name.clone(),
+            display_name: s.display_name.clone(),
+            last_played: s.last_played,
+            expired: s.expired,
+            nickname: s.nickname.clone(),
+            color: s.color.clone(),
+        }
     }
 }
 
@@ -116,6 +143,8 @@ impl Store {
                 added_at: now(),
                 last_played: None,
                 expired: false,
+                nickname: String::new(),
+                color: String::new(),
             }),
         })
     }
@@ -158,9 +187,106 @@ pub fn app_user_cached() -> Option<roblox::User> {
     APP_USER.lock().unwrap().clone()
 }
 
-/// The saved accounts in card order: key, display name, @name, login expired. Never the login.
-pub fn saved_names(app: &AppHandle) -> Vec<(String, String, String, bool)> {
-    app.state::<Store>().list.lock().unwrap().iter().map(|s| (s.id.to_string(), s.display_name.clone(), s.name.clone(), s.expired)).collect()
+/// A saved account as the phone page names it. Never the login.
+pub struct Named {
+    pub key: String,
+    /// The nickname, or the display name.
+    pub label: String,
+    pub name: String,
+    pub color: String,
+    pub expired: bool,
+}
+
+/// The saved accounts in card order, by name.
+pub fn saved_names(app: &AppHandle) -> Vec<Named> {
+    app.state::<Store>()
+        .list
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| Named { key: s.id.to_string(), label: s.label(), name: s.name.clone(), color: s.color.clone(), expired: s.expired })
+        .collect()
+}
+
+/// The label of a Roblox user that is also a saved account (the Roblox app's card when its login
+/// is one of his saved accounts): its nickname follows it there too.
+pub fn label_of_user(app: &AppHandle, user: &roblox::User) -> String {
+    app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == user.id).map(|s| s.label()).unwrap_or_else(|| user.display_name.clone())
+}
+
+/// Sets the account's nickname and color; its open clients take the new name in their title.
+#[tauri::command]
+pub fn accounts_set_label(app: AppHandle, id: u64, nickname: String, color: String) -> Result<(), String> {
+    let nickname = nickname.trim().to_string();
+    if nickname.chars().count() > NICKNAME_MAX {
+        return Err(tr!("o apelido pode ter até {NICKNAME_MAX} letras", "the nickname can have up to {NICKNAME_MAX} characters"));
+    }
+    if !color.is_empty() && !COLORS.contains(&color.as_str()) {
+        return Err(tr!("cor inválida", "invalid color"));
+    }
+    let store = app.state::<Store>();
+    let mut label = None;
+    store.update(|list| {
+        if let Some(s) = list.iter_mut().find(|s| s.id == id) {
+            s.nickname = nickname;
+            s.color = color;
+            label = Some(s.label());
+        }
+    })?;
+    let label = label.ok_or_else(|| tr!("essa conta não está mais salva", "that account is no longer saved"))?;
+    let clients = app.state::<clients::Clients>();
+    clients.rename(&id.to_string(), &label);
+    if user_id("app") == Some(id) {
+        clients.rename("app", &label);
+    }
+    Ok(())
+}
+
+/// Every saved account with its login, for a file to carry them to another PC (transfer.rs). The
+/// logins never leave Rust.
+pub fn export_all(app: &AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let store = app.state::<Store>();
+    let ids: Vec<u64> = store.list.lock().unwrap().iter().map(|s| s.id).collect();
+    let mut out = vec![];
+    for id in ids {
+        let login = store.login_of(id)?;
+        let list = store.list.lock().unwrap();
+        let Some(s) = list.iter().find(|s| s.id == id) else { continue };
+        out.push(serde_json::json!({
+            "id": s.id, "name": s.name, "displayName": s.display_name, "login": login,
+            "lastPlayed": s.last_played, "nickname": s.nickname, "color": s.color,
+        }));
+    }
+    Ok(out)
+}
+
+/// One account from another PC's file: its login sealed again for this Windows user, its place
+/// in the list kept when it is saved here already. Says whether it was new here.
+pub fn import_one(app: &AppHandle, v: &serde_json::Value) -> Result<bool, String> {
+    let bad = || tr!("o arquivo tem uma conta incompleta", "the file has an incomplete account");
+    let id = v["id"].as_u64().ok_or_else(bad)?;
+    let login = v["login"].as_str().filter(|l| !l.is_empty()).ok_or_else(bad)?;
+    let user = roblox::User { id, name: v["name"].as_str().unwrap_or_default().into(), display_name: v["displayName"].as_str().unwrap_or_default().into() };
+    let store = app.state::<Store>();
+    let new = !store.list.lock().unwrap().iter().any(|s| s.id == id);
+    store.put(&user, login)?;
+    let nickname = v["nickname"].as_str().unwrap_or_default().to_string();
+    let color = v["color"].as_str().filter(|c| COLORS.contains(c)).unwrap_or_default().to_string();
+    let last_played = v["lastPlayed"].as_u64();
+    store.update(|list| {
+        if let Some(s) = list.iter_mut().find(|s| s.id == id) {
+            if new || s.nickname.is_empty() {
+                s.nickname = nickname;
+            }
+            if new || s.color.is_empty() {
+                s.color = color;
+            }
+            if s.last_played.is_none() {
+                s.last_played = last_played;
+            }
+        }
+    })?;
+    Ok(new)
 }
 
 /// The saved accounts' keys, in the order he gave the cards.
@@ -342,7 +468,7 @@ pub async fn check_logins(app: &AppHandle) -> Vec<String> {
                 }
                 if !alive {
                     s.expired = true;
-                    name = Some(s.display_name.clone());
+                    name = Some(s.label());
                 }
             }
         });
@@ -354,10 +480,11 @@ pub async fn check_logins(app: &AppHandle) -> Vec<String> {
     expired
 }
 
-/// A saved account's name and whether its login expired, by its key; None when it is not saved.
+/// A saved account's name (its nickname when it has one) and whether its login expired, by its
+/// key; None when it is not saved.
 pub fn saved(app: &AppHandle, key: &str) -> Option<(String, bool)> {
     let id: u64 = key.parse().ok()?;
-    app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| (s.display_name.clone(), s.expired))
+    app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| (s.label(), s.expired))
 }
 
 /// A saved account's login, for the site window (site.rs). Never sent to a page.
@@ -550,8 +677,8 @@ pub async fn play(app: AppHandle, account: String, game: String) -> Result<Playe
     let _ = tauri::async_runtime::spawn_blocking(move || handle.state::<clients::Clients>().end_tray_players()).await;
     let process = win::open_link(&roblox::launch_link(&ticket, &place))?;
     let name = match saved_id {
-        Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.display_name.clone()),
-        None => app_user.as_ref().map(|u| u.display_name.clone()),
+        Some(id) => app.state::<Store>().list.lock().unwrap().iter().find(|s| s.id == id).map(|s| s.label()),
+        None => app_user.as_ref().map(|u| label_of_user(&app, u)),
     };
     let user = saved_id.or(app_user.as_ref().map(|u| u.id));
     match process {

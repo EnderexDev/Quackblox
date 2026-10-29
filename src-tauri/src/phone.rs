@@ -57,8 +57,9 @@ static NAMES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 /// Games whose name lookup failed, and when: asked again only after a while.
 static FAILED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 const NAME_RETRY: Duration = Duration::from_secs(60);
-/// What the phone's commands did, newest last, for the page to show as it polls.
-static NOTICES: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+/// What the phone's commands did and what the watch told, newest last, for the page to show as it
+/// polls. The flag marks a drop: the page beeps and shakes for it.
+static NOTICES: Mutex<Vec<(u64, String, bool)>> = Mutex::new(Vec::new());
 static NOTICE_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -69,11 +70,20 @@ pub struct GameItem {
     pub name: String,
 }
 
-fn notice(text: String) {
+pub fn notice(text: String) {
+    push_notice(text, false);
+}
+
+/// A drop, told by the watch (vigia.rs).
+pub fn alarm(text: String) {
+    push_notice(text, true);
+}
+
+fn push_notice(text: String, alarm: bool) {
     // The id is taken under the lock, so the list stays in id order for the page's `since`.
     let mut n = NOTICES.lock().unwrap();
     let id = NOTICE_ID.fetch_add(1, Ordering::Relaxed) + 1;
-    n.push((id, text));
+    n.push((id, text, alarm));
     let extra = n.len().saturating_sub(20);
     n.drain(..extra);
 }
@@ -400,12 +410,30 @@ fn handle(app: &AppHandle, mut stream: TcpStream, ip: IpAddr, generation: u64) {
             reply_started(&mut stream, started);
         }
         ("POST", "/api/close") => {
-            let account = s("account");
-            let left = app.state::<Clients>().end_account(&account);
+            let (kind, id) = (s("kind"), s("id"));
+            let lists = crate::organize::organize_get(app.clone());
+            let (accounts, who) = match kind.as_str() {
+                "all" => (app.state::<Clients>().accounts_open(), tr!("todas", "all")),
+                "group" => match lists.groups.iter().find(|g| g.id == id) {
+                    Some(g) => (g.accounts.clone(), g.name.clone()),
+                    None => return error(&mut stream, "404 Not Found", tr!("esse grupo não existe mais", "that group no longer exists")),
+                },
+                "profile" => match lists.profiles.iter().find(|p| p.id == id) {
+                    Some(p) => (p.accounts.clone(), p.name.clone()),
+                    None => return error(&mut stream, "404 Not Found", tr!("esse perfil não existe mais", "that profile no longer exists")),
+                },
+                _ => (vec![id.clone()], name_of(app, &id)),
+            };
+            let (closed, left) = app.state::<Clients>().end_accounts(&accounts);
             if left > 0 {
-                return error(&mut stream, "409 Conflict", tr!("o Roblox não fechou", "Roblox didn't close"));
+                return error(&mut stream, "409 Conflict", tr!("{who}: {left} Roblox não fechou", "{who}: {left} Roblox didn't close"));
             }
-            json_reply(&mut stream, "200 OK", json!({ "ok": tr!("{} fechada", "{} closed", name_of(app, &account)) }));
+            json_reply(&mut stream, "200 OK", json!({ "ok": tr!("{who}: {closed} Roblox fechado(s)", "{who}: {closed} Roblox closed") }));
+        }
+        ("POST", "/api/mute") => {
+            let on = body.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
+            app.state::<Clients>().set_mute(&s("account"), on);
+            json_reply(&mut stream, "200 OK", json!({ "ok": "" }));
         }
         ("POST", "/api/rejoin") => {
             let account = s("account");
@@ -486,13 +514,22 @@ fn game_name(app: &AppHandle, game: &str) -> Option<String> {
     })
 }
 
+/// A game's name from what is already known, asking no one (a restart's notice, launch.rs).
+pub fn known_game_name(app: &AppHandle, game: &str) -> Option<String> {
+    known_name(app, game)
+}
+
 /// A game's name from what is already known, asking no one.
 fn known_name(app: &AppHandle, game: &str) -> Option<String> {
     if let Some(g) = RECENTS.lock().unwrap().iter().find(|g| g.game == game) {
         return Some(g.name.clone());
     }
-    if let Some(p) = crate::organize::organize_get(app.clone()).profiles.iter().find(|p| crate::organize::game_arg(&p.game) == game) {
+    let lists = crate::organize::organize_get(app.clone());
+    if let Some(p) = lists.profiles.iter().find(|p| crate::organize::game_arg(&p.game) == game) {
         return Some(p.game.name.clone());
+    }
+    if let Some(f) = lists.favorites.iter().find(|f| crate::organize::game_arg(&f.game) == game) {
+        return Some(f.name.clone());
     }
     NAMES.lock().unwrap().as_ref().and_then(|n| n.get(game)).filter(|n| !n.is_empty()).cloned()
 }
@@ -538,22 +575,30 @@ fn state(app: &AppHandle, since: u64) -> serde_json::Value {
     let clients = app.state::<Clients>();
     let live = clients.live();
     // Two accounts often share a display name (the Roblox app's is usually a saved one): the @name
-    // goes beside it when it differs, and the app's card says it is the app's.
-    let mut people: Vec<(String, String, String, bool)> = crate::accounts::saved_names(app)
+    // goes beside it when it differs, and the app's card says it is the app's. A nickname shows in
+    // place of the display name, its color beside it.
+    let mut people: Vec<(String, String, String, bool, String)> = crate::accounts::saved_names(app)
         .into_iter()
-        .map(|(key, display, name, expired)| {
-            let label = if display == name { name.clone() } else { format!("{display} @{name}") };
-            (key, label, format!("@{name}"), expired)
+        .map(|n| {
+            let label = if n.label == n.name { n.name.clone() } else { format!("{} @{}", n.label, n.name) };
+            (n.key, label, format!("@{}", n.name), n.expired, n.color)
         })
         .collect();
-    let app_name = crate::accounts::app_user_cached().map(|u| u.display_name).or_else(|| live.iter().any(|c| c.account == "app").then(|| "Roblox".into()));
+    let app_name = crate::accounts::app_user_cached().map(|u| crate::accounts::label_of_user(app, &u)).or_else(|| live.iter().any(|c| c.account == "app").then(|| "Roblox".into()));
     if let Some(n) = app_name {
-        people.push(("app".into(), tr!("{n} (app do Roblox)", "{n} (Roblox app)"), tr!("app do Roblox", "Roblox app"), false));
+        people.push(("app".into(), tr!("{n} (app do Roblox)", "{n} (Roblox app)"), tr!("app do Roblox", "Roblox app"), false, String::new()));
     }
     let mut lines = vec![];
     let mut accounts = vec![];
-    let mut games: Vec<GameItem> = RECENTS.lock().unwrap().clone();
-    for (key, name, handle, expired) in &people {
+    let lists = crate::organize::organize_get(app.clone());
+    // His favorite private servers first, then the recent games.
+    let mut games: Vec<GameItem> = lists.favorites.iter().map(|f| GameItem { game: crate::organize::game_arg(&f.game), name: format!("★ {}", f.name) }).collect();
+    for g in RECENTS.lock().unwrap().iter() {
+        if !games.iter().any(|x| x.game == g.game) {
+            games.push(g.clone());
+        }
+    }
+    for (key, name, handle, expired, color) in &people {
         let mine: Vec<_> = live.iter().filter(|c| &c.account == key).collect();
         let eco = clients.eco_on(key);
         let list: Vec<_> = mine
@@ -594,6 +639,9 @@ fn state(app: &AppHandle, since: u64) -> serde_json::Value {
                 if eco {
                     l += ", Eco";
                 }
+                if clients.mute_on(key) {
+                    l += &tr!(", mudo", ", muted");
+                }
                 if mine.len() > 1 {
                     l += &tr!(", {} janelas", ", {} windows", mine.len());
                 }
@@ -601,9 +649,8 @@ fn state(app: &AppHandle, since: u64) -> serde_json::Value {
             }
         };
         lines.push(line);
-        accounts.push(json!({ "key": key, "name": name, "handle": handle, "expired": expired, "eco": eco, "clients": list }));
+        accounts.push(json!({ "key": key, "name": name, "handle": handle, "expired": expired, "eco": eco, "mute": clients.mute_on(key), "color": color, "clients": list }));
     }
-    let lists = crate::organize::organize_get(app.clone());
     for p in &lists.profiles {
         let g = crate::organize::game_arg(&p.game);
         if !games.iter().any(|x| x.game == g) {
@@ -616,7 +663,8 @@ fn state(app: &AppHandle, since: u64) -> serde_json::Value {
     } else {
         tr!("{open} Roblox aberto(s), multi desligado", "{open} Roblox open, multi off")
     };
-    let notices: Vec<_> = NOTICES.lock().unwrap().iter().filter(|(id, _)| *id > since).map(|(id, text)| json!({ "id": id, "text": text })).collect();
+    let notices: Vec<_> =
+        NOTICES.lock().unwrap().iter().filter(|(id, ..)| *id > since).map(|(id, text, alarm)| json!({ "id": id, "text": text, "alarm": alarm })).collect();
     json!({
         "multi": crate::multi::active(),
         "text": format!("{header}\n{}", lines.join("\n")),
@@ -705,13 +753,12 @@ fn reopen(app: &AppHandle, account: String, game: String, name: Option<String>) 
                 Err(e) => return notice(e),
             },
         };
-        let handle = app.clone();
-        let key = account.clone();
-        let left = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end_account(&key)).await.unwrap_or(1);
-        if left > 0 {
-            return notice(tr!("{who}: o Roblox não fechou, não abri outro", "{who}: Roblox didn't close, didn't open another"));
+        match crate::launch::reopen(&app, &account, &game, &game_name).await {
+            Ok(s) if s.failed.is_empty() && s.opened > 0 => notice(tr!("{who} aberta em {game_name}", "{who} opened in {game_name}")),
+            Ok(s) if s.failed.is_empty() => notice(tr!("nada abriu (já estava abrindo?)", "nothing opened (already opening?)")),
+            Ok(s) => notice(s.failed.join("; ")),
+            Err(e) => notice(tr!("{who}: {e}", "{who}: {e}")),
         }
-        spawn_run(&app, crate::launch::Plan { accounts: vec![account], game, game_name, same_server: false, eco: None, grid: false });
     });
     Ok(tr!("fechando e abrindo de novo...", "closing and opening again..."))
 }
@@ -778,6 +825,17 @@ fn texts() -> serde_json::Value {
         "pick": tr!("escolhe...", "pick..."),
         "lookOnly": tr!("Só olhar: nada daqui mexe na tela do PC.", "Look only: nothing here touches the PC's screen."),
         "multiOff": tr!("o multi está desligado: só uma conta por vez", "the multi is off: one account at a time"),
+        "mute": tr!("Mudo", "Mute"),
+        "closeWho": tr!("Fechar", "Close"),
+        "closeAll": tr!("Fechar todas", "Close all"),
+        "confirmCloseWho": tr!("Fechar o Roblox de {{name}}?", "Close the Roblox of {{name}}?"),
+        "confirmCloseAll": tr!("Fechar todos os Roblox abertos pelo Quackblox?", "Close every Roblox Quackblox opened?"),
+        "soundOn": tr!("Som de queda: ligado", "Drop sound: on"),
+        "soundOff": tr!("Ativar som de queda", "Turn on the drop sound"),
+        "soundHint": tr!(
+            "Com esta página aberta, uma queda toca um bipe e vibra. O navegador só deixa tocar som depois de um toque aqui; o iPhone não vibra.",
+            "With this page open, a drop beeps and vibrates. The browser only lets it play a sound after a tap here; iPhones don't vibrate."
+        ),
     })
 }
 

@@ -1,5 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, on, type Account, type Client, type ClientFell, type Clients, type Friend, type Game, type Group, type Lists, type Plan, type Presence, type Profile, type Server, type Settings, type Stats, type Summary, type User } from "./api";
+import {
+  api,
+  COLORS,
+  on,
+  type Account,
+  type Client,
+  type ClientFell,
+  type Clients,
+  type DropEntry,
+  type Favorite,
+  type Friend,
+  type Game,
+  type Group,
+  type Lists,
+  type Plan,
+  type Presence,
+  type Profile,
+  type Server,
+  type Settings,
+  type Stats,
+  type Summary,
+  type User,
+} from "./api";
 import {
   ArrowUpIcon,
   CloseIcon,
@@ -21,6 +43,10 @@ import {
   GlobeIcon,
   CommandIcon,
   ScreenIcon,
+  SoundIcon,
+  MutedIcon,
+  StarIcon,
+  SlidersIcon,
 } from "./components/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
@@ -33,11 +59,22 @@ import { OrganizeBlock, type Person } from "./components/Organize";
 import { Palette, type Command } from "./components/Palette";
 import { ExtrasBlock, print, ScreensSheet } from "./components/Screens";
 
-const NO_CLIENTS: Clients = { clients: [], eco: [], rejoin: [], others: 0 };
-type VigiaSettings = Pick<Settings, "alertWindows" | "alertDiscord" | "discordWebhook" | "loginCheck">;
+const NO_CLIENTS: Clients = { clients: [], eco: [], rejoin: [], mute: [], restart: {}, places: [], others: 0 };
+type VigiaSettings = Pick<Settings, "alertWindows" | "alertDiscord" | "discordWebhook" | "loginCheck" | "ramLimitMb" | "ramReopen">;
 /** Only the watch's own fields: the whole set also carries the language, which must not ride along. */
-const vigiaOf = (s: Settings): VigiaSettings => ({ alertWindows: s.alertWindows, alertDiscord: s.alertDiscord, discordWebhook: s.discordWebhook, loginCheck: s.loginCheck });
-const NO_VIGIA: VigiaSettings = { alertWindows: true, alertDiscord: false, discordWebhook: "", loginCheck: false };
+const vigiaOf = (s: Settings): VigiaSettings => ({
+  alertWindows: s.alertWindows,
+  alertDiscord: s.alertDiscord,
+  discordWebhook: s.discordWebhook,
+  loginCheck: s.loginCheck,
+  ramLimitMb: s.ramLimitMb,
+  ramReopen: s.ramReopen,
+});
+const NO_VIGIA: VigiaSettings = { alertWindows: true, alertDiscord: false, discordWebhook: "", loginCheck: false, ramLimitMb: 0, ramReopen: false };
+/** Hours a restart can be set to (clients.rs takes up to 72). */
+const RESTART_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
+/** A saved account's name as the cards show it: his nickname, or Roblox's display name. */
+const labelOf = (a: Account) => a.nickname || a.displayName;
 /** The phone page and Discord's presence (phase 5): off until he turns them on. */
 type ExtrasSettings = Pick<Settings, "phone" | "richPresence">;
 const extrasOf = (s: Settings): ExtrasSettings => ({ phone: s.phone, richPresence: s.richPresence });
@@ -126,12 +163,20 @@ export default function App() {
   /** The accounts waiting for room in a full server, with how full it was at the last look. */
   const [waiting, setWaiting] = useState<Record<string, { playing: number; max: number }>>({});
   const [friendsOf, setFriendsOf] = useState<{ key: string; name: string } | null>(null);
-  const [lists, setLists] = useState<Lists>({ groups: [], profiles: [], schedule: [] });
+  const [lists, setLists] = useState<Lists>({ groups: [], profiles: [], schedule: [], favorites: [] });
   const [palette, setPalette] = useState(false);
+  /** The account whose settings sheet is open ("app" or a saved id). */
+  const [settingsOf, setSettingsOf] = useState<string | null>(null);
   const alarmTimer = useRef<number | undefined>(undefined);
+  /** The saved account the Roblox app is logged in to, when it is one: its nickname and color follow the app's card. */
+  const appSaved = appUser ? accounts.find((a) => a.id === appUser.id) : undefined;
   // Read by the listeners set up once: the names as they are now.
   const nameOf = useRef((key: string) => key);
-  nameOf.current = (key) => (key === "app" ? appUser?.displayName : accounts.find((a) => String(a.id) === key)?.displayName) ?? "Roblox";
+  nameOf.current = (key) => {
+    if (key === "app") return appSaved ? labelOf(appSaved) : (appUser?.displayName ?? "Roblox");
+    const a = accounts.find((a) => String(a.id) === key);
+    return a ? labelOf(a) : "Roblox";
+  };
 
   const loadAccounts = useCallback(() => api.accounts().then(setAccounts).catch(toast), []);
   const loadAppAccount = useCallback(
@@ -185,6 +230,8 @@ export default function App() {
         alarmTimer.current = window.setTimeout(() => setAlarm(null), PANIC_MS);
       }),
       on.clientRejoin((e) => (e.error ? toast(texts().rejoinFailed(e.name, e.error)) : notify(texts().rejoined(e.name), "info"))),
+      on.clientRestart((e) => (e.error ? toast(texts().restartFailed(e.name, e.error)) : notify(texts().restarted(e.name), "info"))),
+      on.clientRam((e) => toast(texts().ramHigh(e.name, e.mb, e.reopen))),
       on.accountsChanged(loadAccounts),
       on.hotkeysFailed((keys) => toast(texts().hotkeysFailed(keys))),
     ];
@@ -476,6 +523,29 @@ export default function App() {
     setClients((c) => ({ ...c, rejoin: on ? [...c.rejoin, key] : c.rejoin.filter((k) => k !== key) }));
     api.setRejoin(key, on).then(setClients).catch(toast);
   };
+  const toggleMute = (key: string) => {
+    const on = !clients.mute.includes(key);
+    setClients((c) => ({ ...c, mute: on ? [...c.mute, key] : c.mute.filter((k) => k !== key) }));
+    api.setMute(key, on).then(setClients).catch(toast);
+  };
+  /** Closes the Roblox of these accounts (a group, a profile, all). */
+  const closeMany = (keys: string[]) =>
+    api
+      .closeClients(keys)
+      .then((n) => notify(t.closedCount(n), "info"))
+      .catch(toast);
+  const openKeys = [...new Set(clients.clients.map((c) => c.account))];
+  const [confirmCloseAll, setConfirmCloseAll] = useState(false);
+  useEffect(() => {
+    if (!confirmCloseAll) return;
+    const timer = setTimeout(() => setConfirmCloseAll(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmCloseAll]);
+  const applyPlaces = () =>
+    api
+      .applyPlaces()
+      .then((n) => notify(t.placesApplied(n), "info"))
+      .catch(toast);
   /** `place`: the saved account's place, from 0, for its Ctrl+Shift number; none for the app's. */
   const live = (key: string, place?: number) => ({
     presence: presence[key],
@@ -486,6 +556,10 @@ export default function App() {
     onEco: () => toggleEco(key),
     rejoin: clients.rejoin.includes(key),
     onRejoin: () => toggleRejoin(key),
+    mute: clients.mute.includes(key),
+    onMute: () => toggleMute(key),
+    restartHours: clients.restart[key],
+    placeSaved: clients.places.includes(key),
     onFocus: () => api.focusClient(key).catch(toast),
     hotkey: hotkeys && place !== undefined && place < 9 ? place + 1 : undefined,
   });
@@ -564,19 +638,19 @@ export default function App() {
   // The accounts the pickers and the palette name: the saved ones in card order, the Roblox app's last.
   const people: Person[] = [
     // The @name too when the display name differs: two accounts often share one (Enderex and EnderexDev).
-    ...accounts.map((a) => ({ key: String(a.id), name: a.displayName === a.name ? a.name : `${a.displayName} @${a.name}`, avatar: avatars[a.id] })),
-    { key: "app", name: appUser ? `${t.robloxApp} (${appUser.displayName})` : t.robloxApp, avatar: appUser ? avatars[appUser.id] : undefined },
+    ...accounts.map((a) => ({ key: String(a.id), name: labelOf(a) === a.name ? a.name : `${labelOf(a)} @${a.name}`, avatar: avatars[a.id] })),
+    { key: "app", name: appUser ? `${t.robloxApp} (${nameOf.current("app")})` : t.robloxApp, avatar: appUser ? avatars[appUser.id] : undefined },
   ];
   // The camera wall: each account with a client window, in card order.
-  const screenList = [...accounts.map((a) => ({ key: String(a.id), name: a.displayName })), { key: "app", name: appUser?.displayName ?? t.robloxApp }].filter((s) =>
+  const screenList = [...accounts.map((a) => ({ key: String(a.id), name: labelOf(a) })), { key: "app", name: appUser ? nameOf.current("app") : t.robloxApp }].filter((s) =>
     clientsOf(s.key).some((c) => c.window),
   );
   const closeScreens = useCallback(() => setScreens(false), []);
   const commands = (): Command[] => {
     // Two accounts may share a display name (the Roblox app's is often a saved one): the hint says which.
     const playable = [
-      ...(appUser ? [{ key: "app", name: appUser.displayName, who: t.robloxApp, expired: false }] : []),
-      ...accounts.map((a) => ({ key: String(a.id), name: a.displayName, who: `@${a.name}`, expired: a.expired })),
+      ...(appUser ? [{ key: "app", name: nameOf.current("app"), who: t.robloxApp, expired: false }] : []),
+      ...accounts.map((a) => ({ key: String(a.id), name: labelOf(a), who: `@${a.name}`, expired: a.expired })),
     ];
     // More than one account opens only with the multi on (launch.rs).
     const canRun = (n: number) => !playingAll && (n < 2 || multi === true);
@@ -590,8 +664,15 @@ export default function App() {
     if (screenList.length) out.push({ id: "screens", label: t.wallTitle, run: () => setScreens(true) });
     if (screenList.length) out.push({ id: "print-all", label: t.printAll, run: () => print(null, t) });
     if (windowsOpen > 1) out.push({ id: "minimize", label: t.minimizeOthers, hint: "Ctrl+Shift+0", run: () => api.minimizeOthers().catch(toast) });
+    if (openKeys.length) out.push({ id: "close-all", label: t.cmdCloseAll, run: () => closeMany(openKeys) });
+    for (const g of lists.groups.filter((g) => g.accounts.some((k) => openKeys.includes(k))))
+      out.push({ id: `close-group-${g.id}`, label: t.cmdCloseGroup(g.name), run: () => closeMany(g.accounts) });
+    for (const pr of lists.profiles.filter((p) => p.accounts.some((k) => openKeys.includes(k))))
+      out.push({ id: `close-profile-${pr.id}`, label: t.cmdCloseProfile(pr.name), run: () => closeMany(pr.accounts) });
+    if (clients.places.length && windowsOpen) out.push({ id: "places", label: t.applyPlaces, run: applyPlaces });
     for (const a of playable) {
       if (clientsOf(a.key).some((c) => c.window)) out.push({ id: `focus-${a.key}`, label: t.cmdFocus(a.name), hint: a.who, run: () => api.focusClient(a.key).catch(toast) });
+      out.push({ id: `mute-${a.key}`, label: t.cmdMute(a.name, !clients.mute.includes(a.key)), hint: a.who, run: () => toggleMute(a.key) });
       out.push({ id: `eco-${a.key}`, label: t.cmdEco(a.name, !clients.eco.includes(a.key)), hint: a.who, run: () => toggleEco(a.key) });
       out.push({ id: `rejoin-${a.key}`, label: t.cmdRejoin(a.name, !clients.rejoin.includes(a.key)), hint: a.who, run: () => toggleRejoin(a.key) });
       if (a.key !== "app" && !a.expired) out.push({ id: `site-${a.key}`, label: t.cmdSite(a.name), hint: a.who, run: () => api.openSite(a.key).catch(toast) });
@@ -630,7 +711,20 @@ export default function App() {
               <h2>{t.gameTitle}</h2>
               <span className="muted small">{t.gameHint}</span>
             </div>
-            <GamePicker game={game} recents={recents} onPick={pickGame} onForget={forgetRecent} />
+            <GamePicker
+              game={game}
+              recents={recents}
+              onPick={pickGame}
+              onForget={forgetRecent}
+              favorites={lists.favorites}
+              onFavorite={(name) =>
+                game &&
+                saveLists({ ...lists, favorites: [...lists.favorites, { id: crypto.randomUUID(), name, game: { ...game, jobId: null } }] }).then(
+                  (ok) => ok && notify(t.favoriteSaved(name), "info"),
+                )
+              }
+              onUnfavorite={(f) => saveLists({ ...lists, favorites: lists.favorites.filter((x) => x.id !== f.id) })}
+            />
           </section>
 
           <section className="block">
@@ -659,6 +753,24 @@ export default function App() {
                 <button className="pill-btn ghost small" onClick={() => setScreens(true)} title={t.screensTitle}>
                   <ScreenIcon size={15} /> {t.screens}
                 </button>
+                {clients.places.length > 0 && (
+                  <button className="pill-btn ghost small" onClick={applyPlaces} title={t.applyPlacesTitle}>
+                    {t.applyPlaces}
+                  </button>
+                )}
+                {openKeys.length > 0 && (
+                  <button
+                    className={`pill-btn ghost small ${confirmCloseAll ? "danger" : ""}`}
+                    title={t.closeAllTitle}
+                    onClick={() => {
+                      if (!confirmCloseAll) return setConfirmCloseAll(true);
+                      setConfirmCloseAll(false);
+                      closeMany(openKeys);
+                    }}
+                  >
+                    <CloseIcon size={15} /> {confirmCloseAll ? t.closeConfirm : t.closeAll}
+                  </button>
+                )}
               </div>
             )}
 
@@ -670,6 +782,8 @@ export default function App() {
                   </>
                 }
                 user={appUser}
+                nickname={appSaved?.nickname}
+                color={appSaved?.color}
                 avatar={appUser ? avatars[appUser.id] : undefined}
                 sub={appError ?? (appUser ? t.appAccountSub : t.readingAppLogin)}
                 missing={!!appError}
@@ -677,12 +791,21 @@ export default function App() {
                 canPlay={!!game && !!appUser}
                 onPlay={() => play("app")}
                 {...live("app")}
-                menu={appUser ? [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: "app", name: appUser.displayName }) }] : undefined}
+                menu={
+                  appUser
+                    ? [
+                        { icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: "app", name: nameOf.current("app") }) },
+                        { icon: <SlidersIcon size={16} />, label: t.accountSettings, run: () => setSettingsOf("app") },
+                      ]
+                    : undefined
+                }
               />
               {accounts.map((a, i) => (
                 <AccountCard
                   key={a.id}
                   user={a}
+                  nickname={a.nickname}
+                  color={a.color}
                   avatar={avatars[a.id]}
                   sub={a.expired ? t.loginExpired : ago(a.lastPlayed, t)}
                   missing={a.expired}
@@ -695,7 +818,8 @@ export default function App() {
                   dragging={dragId === a.id}
                   dragHandlers={dragHandlers(a)}
                   menu={[
-                    ...(a.expired ? [] : [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: String(a.id), name: a.displayName }) }]),
+                    { icon: <SlidersIcon size={16} />, label: t.accountSettings, run: () => setSettingsOf(String(a.id)) },
+                    ...(a.expired ? [] : [{ icon: <FollowIcon size={16} />, label: t.followFriend, run: () => setFriendsOf({ key: String(a.id), name: labelOf(a) }) }]),
                     ...(a.expired ? [] : [{ icon: <GlobeIcon size={16} />, label: t.openSite, run: () => api.openSite(String(a.id)).catch(toast) }]),
                     ...(i > 0 ? [{ icon: <ArrowUpIcon size={16} />, label: t.moveUp, run: () => moveUp(a, i) }] : []),
                     { icon: <TrashIcon size={16} />, label: t.removeAccount, run: () => remove(a), danger: true },
@@ -723,10 +847,14 @@ export default function App() {
             multi={multi}
             onPlayGroup={playGroup}
             onRunProfile={runProfile}
+            open={openKeys}
+            onClose={closeMany}
           />
           <VigiaBlock settings={vigia} saving={savingSettings} onSave={saveSettings} />
+          <HistoryBlock people={people} />
           <ExtrasBlock phone={extras.phone} richPresence={extras.richPresence} saving={savingSettings} onSave={saveSettings} />
           <StatsBlock accounts={accounts} appUser={appUser} />
+          <TransferBlock />
           <ErrorLookup />
         </main>
 
@@ -760,6 +888,39 @@ export default function App() {
             setFriendsOf(null);
             notify(t.friendPicked(friend));
           }}
+        />
+      )}
+      {settingsOf && (
+        <AccountSheet
+          key={settingsOf}
+          account={settingsOf === "app" ? appSaved : accounts.find((a) => String(a.id) === settingsOf)}
+          isApp={settingsOf === "app"}
+          name={nameOf.current(settingsOf)}
+          restart={clients.restart[settingsOf] ?? 0}
+          placeSaved={clients.places.includes(settingsOf)}
+          hasWindow={clientsOf(settingsOf).some((c) => c.window)}
+          onRestart={(h) => api.setRestart(settingsOf, h).then(setClients).catch(toast)}
+          onSavePlace={() =>
+            api
+              .savePlace(settingsOf)
+              .then((c) => {
+                setClients(c);
+                notify(t.placeSaved, "info");
+              })
+              .catch(toast)
+          }
+          onForgetPlace={() => api.forgetPlace(settingsOf).then(setClients).catch(toast)}
+          onLabel={(a, nickname, color) =>
+            api
+              .setLabel(a.id, nickname, color)
+              .then(() => loadAccounts())
+              .then(() => true)
+              .catch((e) => {
+                toast(e);
+                return false;
+              })
+          }
+          onClose={() => setSettingsOf(null)}
         />
       )}
       {screens && <ScreensSheet screens={screenList} onClose={closeScreens} />}
@@ -826,9 +987,28 @@ function MultiPill({ active, autoClose, stuck }: { active: boolean | null; autoC
   );
 }
 
-function GamePicker({ game, recents, onPick, onForget }: { game: Game | null; recents: Game[]; onPick: (g: Game | null) => void; onForget: (g: Game) => void }) {
+function GamePicker({
+  game,
+  recents,
+  onPick,
+  onForget,
+  favorites,
+  onFavorite,
+  onUnfavorite,
+}: {
+  game: Game | null;
+  recents: Game[];
+  onPick: (g: Game | null) => void;
+  onForget: (g: Game) => void;
+  favorites: Favorite[];
+  onFavorite: (name: string) => void;
+  onUnfavorite: (f: Favorite) => void;
+}) {
   const t = useT();
   const [text, setText] = useState("");
+  /** The name being typed for a new favorite, while its box is open. */
+  const [naming, setNaming] = useState<string | null>(null);
+  const isFavorite = !!game?.linkCode && favorites.some((f) => f.game.placeId === game.placeId && f.game.linkCode === game.linkCode);
   const [loading, setLoading] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -884,6 +1064,11 @@ function GamePicker({ game, recents, onPick, onForget }: { game: Game | null; re
               <ServerIcon size={15} /> {t.servers}
             </button>
           )}
+          {game.linkCode && !isFavorite && naming === null && (
+            <button className="pill-btn ghost small" onClick={() => setNaming(game.name)} title={t.favoriteTitle}>
+              <StarIcon size={15} /> {t.favorite}
+            </button>
+          )}
           <button className="round-btn" onClick={() => { onPick(null); setTimeout(() => input.current?.focus()); }} title={t.changeGame} aria-label={t.changeGame}>
             <CloseIcon size={16} />
           </button>
@@ -910,7 +1095,44 @@ function GamePicker({ game, recents, onPick, onForget }: { game: Game | null; re
           </button>
         </form>
       )}
+      {game && naming !== null && (
+        <form
+          className="job-paste"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!naming.trim()) return;
+            onFavorite(naming.trim());
+            setNaming(null);
+          }}
+        >
+          <input value={naming} placeholder={t.favoriteName} onChange={(e) => setNaming(e.target.value)} autoFocus maxLength={40} />
+          <button className="pill-btn ghost small" type="button" onClick={() => setNaming(null)}>
+            {t.cancel}
+          </button>
+          <button className="pill-btn small" disabled={!naming.trim()}>
+            {t.save}
+          </button>
+        </form>
+      )}
       {game && browsing && !game.linkCode && <ServerBrowser game={game} onPick={onPick} />}
+      {favorites.length > 0 && (
+        <div className="recents">
+          <span className="muted small">{t.favorites}</span>
+          <div className="recent-row">
+            {favorites.map((f) => (
+              <div key={f.id} className={`recent ${game && sameGame(game, f.game) ? "on" : ""}`}>
+                <button className="recent-pick" onClick={() => onPick(f.game)} title={`${f.name} · ${f.game.name}`}>
+                  <StarIcon size={14} />
+                  <span>{f.name}</span>
+                </button>
+                <button className="recent-x" onClick={() => onUnfavorite(f)} aria-label={t.forgetFavorite(f.name)}>
+                  <CloseIcon size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {recents.length > 0 && (
         <div className="recents">
           <span className="muted small">{t.recents}</span>
@@ -945,6 +1167,9 @@ type MenuItem = { icon: React.ReactNode; label: string; run: () => void; danger?
 
 function AccountCard(p: {
   user: User | null;
+  /** His name for it, shown in place of the display name. */
+  nickname?: string;
+  color?: string;
   avatar?: string;
   sub: string;
   tag?: React.ReactNode;
@@ -965,6 +1190,11 @@ function AccountCard(p: {
   /** Goes back in by itself when it drops. */
   rejoin: boolean;
   onRejoin: () => void;
+  mute: boolean;
+  onMute: () => void;
+  /** Hours between its restarts, when set. */
+  restartHours?: number;
+  placeSaved: boolean;
   onFocus: () => void;
   /** N of its Ctrl+Shift+N, when the hotkeys are on. */
   hotkey?: number;
@@ -985,7 +1215,8 @@ function AccountCard(p: {
 
   return (
     <div
-      className={`card account ${p.missing ? "missing" : ""} ${p.dragHandlers ? "movable" : ""} ${p.dragging ? "dragging" : ""}`}
+      className={`card account ${p.missing ? "missing" : ""} ${p.dragHandlers ? "movable" : ""} ${p.dragging ? "dragging" : ""} ${p.color ? "colored" : ""}`}
+      style={p.color ? ({ "--acc": p.color } as React.CSSProperties) : undefined}
       data-account={p.dragId}
       {...p.dragHandlers}
     >
@@ -1019,10 +1250,19 @@ function AccountCard(p: {
         )}
       </div>
       <div className="account-text">
-        <span className="account-name">{p.user?.displayName ?? t.robloxAccount}</span>
-        {p.user && <span className="muted small">@{p.user.name}</span>}
+        <span className="account-name">
+          {p.color && <span className="color-dot" />}
+          {p.nickname || p.user?.displayName || t.robloxAccount}
+        </span>
+        {p.user && <span className="muted small">{p.nickname ? `${p.user.displayName} @${p.user.name}` : `@${p.user.name}`}</span>}
         <span className={`small ${p.missing ? "warn" : "muted"}`}>{p.sub}</span>
         {p.presence && p.presence.kind !== "offline" && <span className={`small presence-text ${p.presence.kind}`}>{presenceText(p.presence, t)}</span>}
+        {(p.restartHours || p.placeSaved) && (
+          <span className="chips">
+            {p.restartHours ? <span className="chip">{t.restartChip(p.restartHours)}</span> : null}
+            {p.placeSaved && <span className="chip">{t.placeChip}</span>}
+          </span>
+        )}
       </div>
       {p.clients.length > 0 && <LiveLine clients={p.clients} onFocus={p.onFocus} />}
       <div className="card-actions">
@@ -1045,6 +1285,93 @@ function AccountCard(p: {
         <button className={`round-btn eco-btn ${p.eco ? "on" : ""}`} onClick={p.onEco} title={p.eco ? t.ecoOn : t.ecoOff} aria-label={t.ecoLabel} aria-pressed={p.eco}>
           <LeafIcon size={16} />
         </button>
+        <button className={`round-btn mute-btn ${p.mute ? "on" : ""}`} onClick={p.onMute} title={p.mute ? t.muteOn : t.muteOff} aria-label={t.muteLabel} aria-pressed={p.mute}>
+          {p.mute ? <MutedIcon size={16} /> : <SoundIcon size={16} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** One account's own settings: nickname and color (a saved account), restart hours, window place. */
+function AccountSheet(p: {
+  /** The saved account, or the one the Roblox app is logged in to; none for an app login not saved. */
+  account?: Account;
+  isApp: boolean;
+  name: string;
+  restart: number;
+  placeSaved: boolean;
+  hasWindow: boolean;
+  onRestart: (hours: number) => void;
+  onSavePlace: () => void;
+  onForgetPlace: () => void;
+  onLabel: (a: Account, nickname: string, color: string) => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [nickname, setNickname] = useState(p.account?.nickname ?? "");
+  const [color, setColor] = useState(p.account?.color ?? "");
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && p.onClose();
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [p.onClose]);
+  const changed = !!p.account && (nickname.trim() !== p.account.nickname || color !== p.account.color);
+  return (
+    <div className="sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && p.onClose()}>
+      <div className="sheet" role="dialog" aria-label={t.accountSettings}>
+        <div className="sheet-head">
+          <h3>
+            {t.accountSettings}: {p.name}
+          </h3>
+          <button className="round-btn small-btn" onClick={p.onClose} aria-label={t.close}>
+            <CloseIcon size={16} />
+          </button>
+        </div>
+        {p.isApp ? (
+          <span className="muted small">{t.appLabelHint}</span>
+        ) : (
+          p.account && (
+            <>
+              <span className="muted small">{t.nickname}</span>
+              <input className="sheet-input" value={nickname} placeholder={t.nicknamePlaceholder} maxLength={24} onChange={(e) => setNickname(e.target.value)} />
+              <span className="muted small">{t.nicknameHint}</span>
+              <span className="muted small">{t.color}</span>
+              <div className="swatches" role="radiogroup" aria-label={t.color}>
+                <button className={`swatch none ${color === "" ? "on" : ""}`} role="radio" aria-checked={color === ""} title={t.noColor} aria-label={t.noColor} onClick={() => setColor("")} />
+                {COLORS.map((c) => (
+                  <button key={c} className={`swatch ${color === c ? "on" : ""}`} role="radio" aria-checked={color === c} aria-label={c} style={{ background: c }} onClick={() => setColor(c)} />
+                ))}
+              </div>
+              <div className="sheet-foot">
+                <button className="pill-btn small" disabled={!changed} onClick={() => p.account && p.onLabel(p.account, nickname.trim(), color)}>
+                  {t.save}
+                </button>
+              </div>
+            </>
+          )
+        )}
+        <span className="muted small">{t.restartEvery}</span>
+        <div className="slot-days" role="group" aria-label={t.restartEvery}>
+          {[0, ...RESTART_HOURS].map((h) => (
+            <button key={h} className={`day ${p.restart === h ? "on" : ""}`} aria-pressed={p.restart === h} onClick={() => p.onRestart(h)}>
+              {h === 0 ? t.restartOff : t.restartHours(h)}
+            </button>
+          ))}
+        </div>
+        <span className="muted small">{t.restartHint}</span>
+        <span className="muted small">{t.windowPlace}</span>
+        <div className="vigia-row">
+          <button className="pill-btn ghost small" disabled={!p.hasWindow} title={p.hasWindow ? undefined : t.placeNeedsWindow} onClick={p.onSavePlace}>
+            {t.savePlace}
+          </button>
+          {p.placeSaved && (
+            <button className="pill-btn ghost small" onClick={p.onForgetPlace}>
+              {t.forgetPlace}
+            </button>
+          )}
+        </div>
+        <span className="muted small">{t.windowPlaceHint}</span>
       </div>
     </div>
   );
@@ -1296,7 +1623,11 @@ function VigiaBlock({ settings, saving, onSave }: { settings: VigiaSettings; sav
   const t = useT();
   const [webhook, setWebhook] = useState(settings.discordWebhook);
   const [checking, setChecking] = useState(false);
+  const [ram, setRam] = useState(String(settings.ramLimitMb || 3000));
   useEffect(() => setWebhook(settings.discordWebhook), [settings.discordWebhook]);
+  useEffect(() => {
+    if (settings.ramLimitMb) setRam(String(settings.ramLimitMb));
+  }, [settings.ramLimitMb]);
   const typed = webhook.trim();
   const checkNow = () => {
     setChecking(true);
@@ -1356,8 +1687,295 @@ function VigiaBlock({ settings, saving, onSave }: { settings: VigiaSettings; sav
             {checking ? t.checking2 : t.checkNow}
           </button>
         </div>
+        <div className="vigia-row">
+          <label className="footer-toggle" title={t.ramLimitTitle}>
+            <Toggle on={settings.ramLimitMb > 0} disabled={saving} onChange={(v) => onSave({ ramLimitMb: v ? Math.max(500, Number(ram) || 3000) : 0 })} />
+            {t.ramLimit}
+          </label>
+          <form
+            className="ram-limit"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const mb = Math.round(Number(ram));
+              if (!(mb >= 500 && mb <= 32768)) return toast(t.ramLimitInvalid);
+              onSave({ ramLimitMb: mb });
+            }}
+          >
+            <input value={ram} inputMode="numeric" aria-label="MB" onChange={(e) => setRam(e.target.value.replace(/\D/g, ""))} />
+            <span className="muted small">MB</span>
+            {settings.ramLimitMb > 0 && String(settings.ramLimitMb) !== ram && (
+              <button className="pill-btn small" disabled={saving}>
+                {t.save}
+              </button>
+            )}
+          </form>
+        </div>
+        {settings.ramLimitMb > 0 && (
+          <div className="vigia-row">
+            <label className="footer-toggle">
+              <Toggle on={settings.ramReopen} disabled={saving} onChange={(v) => onSave({ ramReopen: v })} />
+              {t.ramReopen}
+            </label>
+          </div>
+        )}
       </div>
     </section>
+  );
+}
+
+/** Each drop the watch told, newest first, with what Roblox's code means. */
+function HistoryBlock({ people }: { people: { key: string; name: string }[] }) {
+  const t = useT();
+  const [list, setList] = useState<DropEntry[]>([]);
+  const [who, setWho] = useState("");
+  const [shown, setShown] = useState(10);
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => {
+    const load = () => api.history().then(setList).catch(() => {});
+    load();
+    // A drop just told: read again a moment after (vigia.rs writes it before telling the window).
+    const off = on.clientFell(() => setTimeout(load, 500));
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  useEffect(() => {
+    if (!confirm) return;
+    const timer = setTimeout(() => setConfirm(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirm]);
+  const rows = list.filter((d) => !who || d.account === who);
+  const week = rows.filter((d) => Date.now() / 1000 - d.at < 7 * 86400).length;
+  const what = (d: DropEntry) =>
+    d.kind === "crashed" ? t.dropCrashed : d.kind === "joinFailed" ? t.dropJoinFailed : d.reason ? `${d.reason}: ${errorText(d.reason, t)}` : t.dropNoCode;
+  const when = (at: number) =>
+    new Date(at * 1000).toLocaleString(getLang() === "en" ? "en" : "pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const whoIn = [...new Set(list.map((d) => d.account))];
+  return (
+    <section className="block history">
+      <div className="block-head">
+        <h2>{t.historyTitle}</h2>
+        <span className="muted small">{t.historyHint}</span>
+        {list.length > 0 && (
+          <button
+            className="pill-btn ghost small"
+            onClick={() => {
+              if (!confirm) return setConfirm(true);
+              setConfirm(false);
+              api.clearHistory().then(() => setList([])).catch(toast);
+            }}
+          >
+            {confirm ? t.historyClearConfirm : t.historyClear}
+          </button>
+        )}
+      </div>
+      {list.length === 0 ? (
+        <span className="muted small">{t.historyEmpty}</span>
+      ) : (
+        <>
+          <div className="vigia-row">
+            <select className="slot-profile" value={who} onChange={(e) => setWho(e.target.value)} aria-label={t.historyAll}>
+              <option value="">{t.historyAll}</option>
+              {whoIn.map((k) => (
+                <option key={k} value={k}>
+                  {people.find((p) => p.key === k)?.name ?? list.find((d) => d.account === k)?.name ?? k}
+                </option>
+              ))}
+            </select>
+            <span className="muted small">{t.historyWeek(week)}</span>
+          </div>
+          <div className="stats-list">
+            {rows.slice(0, shown).map((d, i) => (
+              <div key={`${d.at}-${i}`} className="stats-row history-row">
+                <span className="history-when muted small">{when(d.at)}</span>
+                <span className="stats-name">{d.name}</span>
+                <span className="stats-games muted small">{what(d)}</span>
+              </div>
+            ))}
+          </div>
+          {rows.length > shown && (
+            <button className="pill-btn ghost small" onClick={() => setShown((n) => n + 20)}>
+              {t.historyMore(Math.min(20, rows.length - shown))}
+            </button>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** The accounts carried to another PC in a file locked by a password (transfer.rs). */
+function TransferBlock() {
+  const t = useT();
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [working, setWorking] = useState(false);
+  const run = async (f: () => Promise<void>) => {
+    setWorking(true);
+    try {
+      await f();
+    } catch (e) {
+      toast(e);
+    } finally {
+      setWorking(false);
+    }
+  };
+  const save = () => {
+    if (password.length < 8) return toast(t.transferShort);
+    if (password !== again) return toast(t.transferMismatch);
+    run(async () => {
+      const path = await api.exportAccounts(password);
+      if (path) {
+        notify(t.transferSaved(path), "success");
+        setPassword("");
+        setAgain("");
+      }
+    });
+  };
+  const open = () => {
+    if (!password) return toast(t.transferShort);
+    run(async () => {
+      const r = await api.importAccounts(password);
+      if (r) {
+        notify(t.transferDone(r.added, r.updated), "success");
+        setPassword("");
+        setAgain("");
+      }
+    });
+  };
+  return (
+    <section className="block transfer">
+      <div className="block-head">
+        <h2>{t.transferTitle}</h2>
+      </div>
+      <span className="muted small">{t.transferHint}</span>
+      <form className="job-paste webhook" onSubmit={(e) => e.preventDefault()}>
+        <input type="password" value={password} placeholder={t.transferPassword} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+        <input type="password" value={again} placeholder={t.transferPassword2} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" />
+      </form>
+      <div className="vigia-row">
+        <button className="pill-btn small" disabled={working || !password} onClick={save}>
+          {working ? t.transferWorking : t.transferExport}
+        </button>
+        <button className="pill-btn ghost small" disabled={working || !password} onClick={open}>
+          {t.transferImport}
+        </button>
+      </div>
+      <span className="muted small warn">{t.transferWarn}</span>
+    </section>
+  );
+}
+
+/** The PC's local day as stats.rs keys it (YYYY-MM-DD). */
+const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const CHART_DAYS = 14;
+const CHART_WEEKS = 8;
+
+/** Hours per day (the last 14) or per week (the last 8, Sunday first as the schedule's days), of
+ * every account or one. One series, one color: the bars are the amount, the hover says it. */
+function HoursChart({ stats, who }: { stats: Stats; who: (id: string) => string }) {
+  const t = useT();
+  const [weeks, setWeeks] = useState(false);
+  const [user, setUser] = useState("");
+  const [hover, setHover] = useState<number | null>(null);
+  const days = stats.days ?? {};
+  const secsOf = (day: string) => Object.entries(days[day] ?? {}).reduce((n, [u, s]) => (!user || u === user ? n + s : n), 0);
+  const lang = getLang() === "en" ? "en" : "pt-BR";
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const shift = (d: Date, n: number) => {
+    const x = new Date(d);
+    x.setDate(x.getDate() + n);
+    return x;
+  };
+  type Bar = { label: string; full: string; secs: number };
+  const bars: Bar[] = weeks
+    ? Array.from({ length: CHART_WEEKS }, (_, i) => {
+        const start = shift(today, -today.getDay() - 7 * (CHART_WEEKS - 1 - i));
+        const secs = Array.from({ length: 7 }, (_, d) => secsOf(dayKey(shift(start, d)))).reduce((a, b) => a + b, 0);
+        const label = start.toLocaleDateString(lang, { day: "2-digit", month: "2-digit" });
+        return { label, full: t.chartWeekOf(label), secs };
+      })
+    : Array.from({ length: CHART_DAYS }, (_, i) => {
+        const d = shift(today, -(CHART_DAYS - 1 - i));
+        return {
+          label: d.toLocaleDateString(lang, { day: "2-digit" }),
+          full: d.toLocaleDateString(lang, { weekday: "short", day: "2-digit", month: "2-digit" }),
+          secs: secsOf(dayKey(d)),
+        };
+      });
+  const users = [...new Set(Object.values(days).flatMap((u) => Object.keys(u)))];
+  const any = Object.keys(days).length > 0;
+  // The scale's top: a whole number of hours, at least one.
+  const top = Math.max(1, Math.ceil(Math.max(...bars.map((b) => b.secs)) / 3600));
+  const W = 560;
+  const H = 150;
+  const left = 30;
+  const bottom = 20;
+  const plotH = H - bottom - 8;
+  const slot = (W - left) / bars.length;
+  const barW = Math.min(28, slot - 6);
+  const y = (secs: number) => 8 + plotH - (secs / (top * 3600)) * plotH;
+  const shown = hover !== null ? bars[hover] : null;
+  return (
+    <div className="hours-chart">
+      <div className="vigia-row">
+        <div className="lang-switch" role="group">
+          <button className={weeks ? "" : "on"} aria-pressed={!weeks} onClick={() => setWeeks(false)}>
+            {t.chartDays}
+          </button>
+          <button className={weeks ? "on" : ""} aria-pressed={weeks} onClick={() => setWeeks(true)}>
+            {t.chartWeeks}
+          </button>
+        </div>
+        {users.length > 1 && (
+          <select className="slot-profile" value={user} onChange={(e) => setUser(e.target.value)} aria-label={t.chartAll}>
+            <option value="">{t.chartAll}</option>
+            {users.map((u) => (
+              <option key={u} value={u}>
+                {who(u)}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="muted small chart-readout">{shown ? `${shown.full}: ${shown.secs ? t.hours(shown.secs) : "0"}` : ""}</span>
+      </div>
+      {!any ? (
+        <span className="muted small">{t.chartEmpty}</span>
+      ) : (
+        <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={t.chartLabel(weeks ? t.chartWeeks : t.chartDays)} onMouseLeave={() => setHover(null)}>
+          {[0, top / 2, top].map((h) => (
+            <g key={h}>
+              <line className="chart-grid" x1={left} x2={W} y1={y(h * 3600)} y2={y(h * 3600)} />
+              <text className="chart-axis" x={left - 6} y={y(h * 3600) + 4} textAnchor="end">
+                {Number.isInteger(h) ? `${h}h` : ""}
+              </text>
+            </g>
+          ))}
+          {bars.map((b, i) => {
+            const x = left + slot * i + (slot - barW) / 2;
+            const h = Math.max(0, y(0) - y(b.secs));
+            return (
+              <g key={i} onMouseEnter={() => setHover(i)}>
+                {/* The whole column answers the hover, not only the bar. */}
+                <rect x={left + slot * i} y={0} width={slot} height={H} fill="transparent" />
+                {b.secs > 0 && (
+                  <path
+                    className={`chart-bar ${hover === i ? "on" : ""}`}
+                    d={`M${x},${y(0)} V${y(0) - h + Math.min(4, h)} Q${x},${y(0) - h} ${x + Math.min(4, h)},${y(0) - h} H${x + barW - Math.min(4, h)} Q${x + barW},${y(0) - h} ${x + barW},${y(0) - h + Math.min(4, h)} V${y(0)} Z`}
+                  />
+                )}
+                {(weeks || i % 2 === bars.length % 2 || i === bars.length - 1) && (
+                  <text className="chart-axis" x={left + slot * i + slot / 2} y={H - 5} textAnchor="middle">
+                    {b.label}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -1432,6 +2050,7 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
           </button>
         )}
       </div>
+      {rows.length > 0 && <HoursChart stats={stats} who={who} />}
       {rows.length === 0 ? (
         <span className="muted small">{t.statsEmpty}</span>
       ) : (

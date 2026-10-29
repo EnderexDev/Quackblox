@@ -1,3 +1,6 @@
+// The phone page's texts are one json! (phone.rs), past the default depth of 128.
+#![recursion_limit = "256"]
+
 /// A text for the user in the language picked (settings.rs): `tr!("pt", "en", args...)`, both
 /// format strings taking the same arguments. Defined before the modules so all of them see it.
 macro_rules! tr {
@@ -8,10 +11,12 @@ macro_rules! tr {
 
 mod accounts;
 mod app_account;
+mod audio;
 mod capture;
 mod clients;
 mod desktop;
 mod discord;
+mod history;
 mod hotkeys;
 mod launch;
 mod logs;
@@ -23,6 +28,7 @@ mod settings;
 mod setup;
 mod site;
 mod stats;
+mod transfer;
 mod vigia;
 mod win;
 
@@ -41,6 +47,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_window(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        // The accounts file's save and open dialogs (transfer.rs), called from Rust only.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(accounts::Store::load(app.handle()));
             // Before the multi, which reads auto_close.
@@ -67,6 +75,7 @@ pub fn run() {
             accounts::accounts_add,
             accounts::accounts_remove,
             accounts::accounts_move,
+            accounts::accounts_set_label,
             accounts::app_account,
             accounts::avatars,
             accounts::game_info,
@@ -79,6 +88,16 @@ pub fn run() {
             clients::clients_get,
             clients::clients_set_eco,
             clients::clients_set_rejoin,
+            clients::clients_set_mute,
+            clients::clients_set_restart,
+            clients::clients_save_place,
+            clients::clients_forget_place,
+            clients::clients_apply_places,
+            clients::clients_close,
+            history::history_get,
+            history::history_clear,
+            transfer::transfer_export,
+            transfer::transfer_import,
             vigia::vigia_test_discord,
             vigia::vigia_test_windows,
             vigia::vigia_check_logins,

@@ -180,3 +180,31 @@ export const ScreenIcon = (p: P) => (
     <path d="M9 20h6M12 16.5V20" />
   </Icon>
 );
+
+export const SoundIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M4.5 9.5h3l4-3.5v12l-4-3.5h-3z" />
+    <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+  </Icon>
+);
+
+export const MutedIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M4.5 9.5h3l4-3.5v12l-4-3.5h-3z" />
+    <path d="m16 9.5 5 5M21 9.5l-5 5" />
+  </Icon>
+);
+
+export const StarIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="m12 4 2.4 5 5.4.6-4 3.7 1.1 5.3L12 15.9l-4.9 2.7 1.1-5.3-4-3.7 5.4-.6z" />
+  </Icon>
+);
+
+export const SlidersIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M5 7h9M18 7h1M5 17h3M12 17h7" />
+    <circle cx="16" cy="7" r="2" />
+    <circle cx="10" cy="17" r="2" />
+  </Icon>
+);

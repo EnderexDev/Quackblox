@@ -119,7 +119,7 @@ async fn who(app: &AppHandle, keys: &[String]) -> Vec<(String, String, Result<()
             if keys.iter().any(|k| *k == u.id.to_string()) {
                 continue;
             }
-            out.push((key.clone(), u.display_name.clone(), Ok(())));
+            out.push((key.clone(), crate::accounts::label_of_user(app, u), Ok(())));
             continue;
         }
         let Some((name, expired)) = crate::accounts::saved(app, key) else { continue };
@@ -272,6 +272,64 @@ async fn first_server(app: &AppHandle, key: &str) -> Option<(u64, String)> {
     }
     let p = crate::accounts::presence(app.clone()).await.ok()?.remove(key)?;
     Some((p.place_id?, p.job_id?))
+}
+
+/// The same game with no server picked: a server named in a link may be full or gone by the time
+/// an account goes back. A private server is kept.
+pub fn same_game(game: &str) -> String {
+    match crate::roblox::parse_game(game) {
+        Some(p) if p.link_code.is_none() && p.job_id.is_some() => p.place_id.to_string(),
+        _ => game.to_string(),
+    }
+}
+
+/// Closes the account's clients and opens it again in `game`: the phone's rejoin, switch and
+/// follow, and the restarts below. Refused with the multi off while other accounts are open (the
+/// new client would close them).
+pub async fn reopen(app: &AppHandle, account: &str, game: &str, game_name: &str) -> Result<Summary, String> {
+    let others = app.state::<Clients>().accounts_open().into_iter().any(|a| a != account);
+    if others && !crate::multi::active() {
+        return Err(tr!("o multi está desligado: abrir de novo fecharia as outras", "the multi is off: opening again would close the others"));
+    }
+    let handle = app.clone();
+    let key = account.to_string();
+    let left = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end_account(&key)).await.unwrap_or(1);
+    if left > 0 {
+        return Err(tr!("o Roblox não fechou, não abri outro", "Roblox didn't close, didn't open another"));
+    }
+    run(app, Plan { accounts: vec![account.to_string()], game: game.to_string(), game_name: game_name.to_string(), same_server: false, eco: None, grid: false }).await
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Restart {
+    account: String,
+    name: String,
+    /// "hours" (every N hours) or "ram" (its memory stayed high).
+    why: &'static str,
+    /// None when it opened again.
+    error: Option<String>,
+}
+
+/// A client due for its restart (clients.rs): closed and opened again in the same game.
+pub async fn restart(app: &AppHandle, account: String, name: String, game: String, why: &'static str) {
+    let game = same_game(&game);
+    let game_name = crate::phone::known_game_name(app, &game).unwrap_or_default();
+    let error = match reopen(app, &account, &game, &game_name).await {
+        Ok(s) if s.failed.is_empty() => None,
+        Ok(s) => Some(s.failed.join("; ")),
+        Err(e) => Some(e),
+    };
+    let text = match (&error, why) {
+        (None, "ram") => tr!("{name} usava memória demais: abri de novo", "{name} was using too much memory: opened it again"),
+        (None, _) => tr!("{name} reiniciada no mesmo jogo", "{name} restarted in the same game"),
+        (Some(e), _) => tr!("{name} não reiniciou: {e}", "{name} didn't restart: {e}"),
+    };
+    crate::phone::notice(text.clone());
+    if error.is_some() {
+        crate::vigia::alert(app, &text);
+    }
+    let _ = app.emit("client-restart", Restart { account, name, why, error });
 }
 
 #[tauri::command]

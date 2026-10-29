@@ -42,6 +42,10 @@ export function OrganizeBlock(p: {
   multi: boolean | null;
   onPlayGroup: (g: Group) => void;
   onRunProfile: (p: Profile) => void;
+  /** The accounts with a Roblox open now. */
+  open: string[];
+  /** Closes the Roblox of these accounts. */
+  onClose: (keys: string[]) => void;
 }) {
   const t = useT();
   const [group, setGroup] = useState<Group | "new" | null>(null);
@@ -109,6 +113,9 @@ export function OrganizeBlock(p: {
             >
               <PlayIcon size={14} /> {t.playGroup}
             </button>
+            <button className="pill-btn ghost small" disabled={!g.accounts.some((k) => p.open.includes(k))} onClick={() => p.onClose(g.accounts)} title={t.closeGroupTitle}>
+              {t.closeGroup}
+            </button>
             <button className="pill-btn ghost small" onClick={() => setGroup(g)}>
               {t.edit}
             </button>
@@ -139,6 +146,9 @@ export function OrganizeBlock(p: {
             <button className="pill-btn small" disabled={!canRun(pr.accounts)} onClick={() => p.onRunProfile(pr)} title={t.runProfileTitle}>
               <PlayIcon size={14} /> {t.runProfile}
             </button>
+            <button className="pill-btn ghost small" disabled={!pr.accounts.some((k) => p.open.includes(k))} onClick={() => p.onClose(pr.accounts)} title={t.closeProfileTitle}>
+              {t.closeGroup}
+            </button>
             <button className="pill-btn ghost small" onClick={() => setProfile(pr)}>
               {t.edit}
             </button>
@@ -162,7 +172,7 @@ export function OrganizeBlock(p: {
             className="pill-btn ghost small"
             disabled={profiles.length === 0}
             title={profiles.length ? undefined : t.slotNeedsProfile}
-            onClick={() => save((l) => ({ schedule: [...l.schedule, { id: newId(), profile: l.profiles[0].id, minute: 9 * 60, days: [], on: false, last: "" }] }))}
+            onClick={() => save((l) => ({ schedule: [...l.schedule, { id: newId(), profile: l.profiles[0].id, minute: 9 * 60, days: [], on: false, last: "", action: "open" }] }))}
           >
             <PlusIcon size={14} /> {t.newSlot}
           </button>
@@ -204,6 +214,18 @@ export function OrganizeBlock(p: {
                 );
               })}
             </div>
+            <select
+              className="slot-profile"
+              aria-label={t.slotAction}
+              value={slot.action ?? "open"}
+              onChange={(e) => {
+                const action = e.target.value as Slot["action"];
+                saveSlot(slot.id, (s) => ({ ...s, action }));
+              }}
+            >
+              <option value="open">{t.slotOpen}</option>
+              <option value="close">{t.slotClose}</option>
+            </select>
             <select className="slot-profile" aria-label={t.slotProfile} value={slot.profile} onChange={(e) => {
                 const id = e.target.value;
                 saveSlot(slot.id, (s) => ({ ...s, profile: id }));
