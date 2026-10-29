@@ -97,7 +97,8 @@ pub async fn transfer_export(app: AppHandle, password: String) -> Result<Option<
     // Argon2 takes a moment and memory: off the async runtime.
     let sealed = tauri::async_runtime::spawn_blocking(move || seal(&password, &plain)).await.map_err(|e| e.to_string())??;
     // Written beside and renamed over: a failed write never leaves an older file half overwritten.
-    let tmp = path.with_extension("quackblox.tmp");
+    // A name of its own, so no file of his beside it is touched.
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
     std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         tr!("não consegui salvar o arquivo: {e}", "couldn't save the file: {e}")
