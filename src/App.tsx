@@ -1943,7 +1943,7 @@ function HoursChart({ stats, who }: { stats: Stats; who: (id: string) => string 
       {!any ? (
         <span className="muted small">{t.chartEmpty}</span>
       ) : (
-        <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={t.chartLabel(weeks ? t.chartWeeks : t.chartDays)} onMouseLeave={() => setHover(null)}>
+        <svg className="chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMid meet" role="img" aria-label={t.chartLabel(weeks ? t.chartWeeks : t.chartDays)} onMouseLeave={() => setHover(null)}>
           {[0, top / 2, top].map((h) => (
             <g key={h}>
               <line className="chart-grid" x1={left} x2={W} y1={y(h * 3600)} y2={y(h * 3600)} />
@@ -2023,7 +2023,10 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
     return () => clearTimeout(timer);
   }, [confirm]);
   if (!stats) return null;
-  const who = (id: string) => accounts.find((a) => String(a.id) === id)?.displayName ?? (appUser && String(appUser.id) === id ? appUser.displayName : `#${id}`);
+  const who = (id: string) => {
+    const a = accounts.find((a) => String(a.id) === id);
+    return a ? labelOf(a) : appUser && String(appUser.id) === id ? appUser.displayName : `#${id}`;
+  };
   const rows = Object.entries(stats.users)
     .map(([id, places]) => {
       const games = Object.entries(places).sort((a, b) => b[1] - a[1]);

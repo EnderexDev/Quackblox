@@ -439,7 +439,8 @@
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  /* 240: Jogar and the three round buttons (rejoin, eco, mute) on one line. */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
 
@@ -772,13 +773,19 @@
 .card-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-top: auto;
 }
 
 .card-actions .round-btn {
-  width: 36px;
-  height: 36px;
+  flex: none;
+  width: 34px;
+  height: 34px;
+}
+
+.card-actions .pill-btn.wide {
+  flex: 1;
+  min-width: 0;
 }
 
 /* The N of Ctrl+Shift+N, a key cap on the avatar's corner. */
