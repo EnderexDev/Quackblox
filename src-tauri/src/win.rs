@@ -62,9 +62,14 @@ pub struct LocalNow {
     pub weekday: u8,
     /// Minutes after midnight.
     pub minute: u32,
+    /// HH:MM:SS, for a file name (the prints).
+    pub clock: String,
 }
 
 pub fn local_now() -> LocalNow {
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-    LocalNow { day: format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay), weekday: t.wDayOfWeek as u8, minute: t.wHour as u32 * 60 + t.wMinute as u32 }
+    LocalNow {
+        day: format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay), weekday: t.wDayOfWeek as u8, minute: t.wHour as u32 * 60 + t.wMinute as u32,
+        clock: format!("{:02}:{:02}:{:02}", t.wHour, t.wMinute, t.wSecond),
+    }
 }

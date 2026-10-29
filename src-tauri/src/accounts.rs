@@ -153,6 +153,16 @@ pub async fn app_account() -> Result<roblox::User, String> {
     Ok(user)
 }
 
+/// The Roblox app's account as last read, without asking Roblox again (the phone page).
+pub fn app_user_cached() -> Option<roblox::User> {
+    APP_USER.lock().unwrap().clone()
+}
+
+/// The saved accounts in card order: key, display name, @name, login expired. Never the login.
+pub fn saved_names(app: &AppHandle) -> Vec<(String, String, String, bool)> {
+    app.state::<Store>().list.lock().unwrap().iter().map(|s| (s.id.to_string(), s.display_name.clone(), s.name.clone(), s.expired)).collect()
+}
+
 /// The saved accounts' keys, in the order he gave the cards.
 pub fn saved_order(app: &AppHandle) -> Vec<String> {
     app.state::<Store>().list.lock().unwrap().iter().map(|s| s.id.to_string()).collect()

@@ -173,3 +173,10 @@ export const ClockIcon = (p: P) => (
     <path d="M12 7.5V12l3 2" />
   </Icon>
 );
+
+export const ScreenIcon = (p: P) => (
+  <Icon {...p}>
+    <rect x="3.5" y="4.5" width="17" height="12" rx="2" />
+    <path d="M9 20h6M12 16.5V20" />
+  </Icon>
+);

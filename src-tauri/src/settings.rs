@@ -25,6 +25,10 @@ pub struct Settings {
     /// Each saved login asked of Roblox every 30 min, so an expired one is told as soon as it
     /// expires. Off by default, by the same rule.
     pub login_check: bool,
+    /// The phone page on the home network (phone.rs). Off by default, by the same rule.
+    pub phone: bool,
+    /// Discord's "Playing Quackblox" with the game (discord.rs). Off by default too.
+    pub rich_presence: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +41,8 @@ impl Default for Settings {
             alert_discord: false,
             discord_webhook: String::new(),
             login_check: false,
+            phone: false,
+            rich_presence: false,
         }
     }
 }
@@ -112,5 +118,12 @@ pub fn settings_set(app: AppHandle, mut settings: Settings) -> Result<Settings, 
     }
     *CURRENT.lock().unwrap() = Some(settings);
     crate::desktop::retranslate(&app);
+    crate::phone::apply(&app);
     Ok(current())
+}
+
+/// Whether this build knows Quackblox's Discord application, so the switch shows.
+#[tauri::command]
+pub fn rich_presence_available() -> bool {
+    crate::discord::available()
 }

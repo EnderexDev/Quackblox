@@ -1,0 +1,431 @@
+<!doctype html>
+<!-- The phone page (phone.rs): served by Quackblox on the home network. The pairing key comes in
+     the QR after '#', is kept in this browser, and goes with each request in a header. Nothing
+     here touches the PC's screen: the pictures are a look only. -->
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0c">
+<title>Quackblox</title>
+<style>
+  :root { color-scheme: dark; --bg: #0a0a0c; --card: #16161b; --line: #26262e; --text: #ececf1; --muted: #9a9aa6; --accent: #ffcc33; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 12px 12px calc(80px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; margin: 4px 0 12px; display: flex; align-items: center; gap: 8px; }
+  h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  h1 .dot.on { background: var(--ok); }
+  h1 .dot.bad { background: var(--bad); }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
+  pre { white-space: pre-wrap; margin: 0; font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  label { display: block; color: var(--muted); font-size: 13px; margin: 8px 0 4px; }
+  select, input, button { font: inherit; color: var(--text); background: #1f1f26; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
+  button { width: auto; cursor: pointer; }
+  button.primary { background: var(--accent); color: #111; border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.on { border-color: var(--ok); color: var(--ok); }
+  button:disabled { opacity: .45; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > select { flex: 1; min-width: 0; }
+  .grow { flex: 1; }
+  .acc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .acc-name { font-weight: 600; font-size: 16px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .state { font-size: 13px; }
+  .state.inGame { color: var(--ok); }
+  .state.dropped, .state.joinFailed { color: var(--bad); }
+  .state.starting { color: var(--warn); }
+  .acc .row { margin-top: 8px; }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--text); margin-top: 10px; }
+  .check input { width: auto; }
+  #toast { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+  #toast div { background: #26262e; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  #toast div.bad { border-color: var(--bad); }
+  .sheet { position: fixed; inset: 0; background: var(--bg); overflow: auto; padding: 12px 12px calc(20px + env(safe-area-inset-bottom)); display: none; }
+  .sheet.open { display: block; }
+  .sheet img { width: 100%; border-radius: 10px; display: block; background: #000; }
+  .wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .tile .muted { margin-top: 4px; }
+  .placeholder { aspect-ratio: 4 / 3; display: grid; place-items: center; text-align: center; padding: 12px; background: #000; border-radius: 10px; color: var(--muted); font-size: 13px; }
+  .notice { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1><span class="dot" id="dot"></span>Quackblox</h1>
+<div id="unpaired" class="card" hidden></div>
+<div id="main" hidden>
+  <h2 data-t="status"></h2>
+  <div class="card"><pre id="status"></pre></div>
+
+  <h2 data-t="open"></h2>
+  <div class="card">
+    <label for="who" data-t="who"></label>
+    <select id="who"></select>
+    <label for="game" data-t="game"></label>
+    <select id="game"></select>
+    <input id="link" hidden autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label class="check" id="sameRow" hidden><input type="checkbox" id="same"><span data-t="sameServer"></span></label>
+    <div class="row" style="margin-top:12px"><button class="primary" id="go" data-t="go"></button></div>
+  </div>
+
+  <div class="row"><h2 data-t="accounts" class="grow"></h2><button id="wallBtn" data-t="wall"></button><button id="printAll" data-t="printAll"></button></div>
+  <div id="accounts"></div>
+  <p class="notice" data-t="lookOnly"></p>
+</div>
+
+<div class="sheet" id="sheet">
+  <div class="row" style="margin-bottom:10px"><button id="back" data-t="back"></button><strong id="sheetTitle" class="grow"></strong></div>
+  <div id="sheetBody"></div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const T = /*TEXTS*/null;
+// How often a picture is asked while one or more are watched (measured: phone.rs).
+const LIVE_MS = 300;
+const WALL_MS = 1000;
+const POLL_MS = 3000;
+const KEY_NAME = "quackblox.key";
+
+if (location.hash.length > 1) {
+  localStorage.setItem(KEY_NAME, decodeURIComponent(location.hash.slice(1)));
+  // Out of the address bar and the history: it is a key.
+  history.replaceState(null, "", location.pathname);
+}
+const key = localStorage.getItem(KEY_NAME) || "";
+const $ = (id) => document.getElementById(id);
+const fill = (s, vars) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
+document.querySelectorAll("[data-t]").forEach((el) => (el.textContent = T[el.dataset.t]));
+
+function toast(text, bad) {
+  const d = document.createElement("div");
+  d.textContent = text;
+  if (bad) d.className = "bad";
+  $("toast").appendChild(d);
+  setTimeout(() => d.remove(), 4500);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: Object.assign({ "X-Quackblox-Key": key }, body ? { "Content-Type": "application/json" } : {}),
+    body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+  });
+  if (res.status === 401) unpaired(T.notPaired);
+  return res;
+}
+
+async function act(path, body) {
+  try {
+    const res = await api(path, body);
+    const j = await res.json();
+    if (j.error) toast(j.error, true);
+    else if (j.ok) toast(j.ok);
+    poll();
+  } catch {
+    toast(T.offline, true);
+  }
+}
+
+function unpaired(text) {
+  $("unpaired").textContent = text;
+  $("unpaired").hidden = false;
+  $("main").hidden = true;
+  $("dot").className = "dot bad";
+}
+
+let state = null;
+let lastNotice = 0;
+let firstPoll = true;
+
+async function poll() {
+  if (!key) return unpaired(T.notPaired);
+  try {
+    const res = await api("/api/state?since=" + lastNotice);
+    if (!res.ok) {
+      if (res.status !== 401) unpaired((await res.json()).error || T.offline);
+      return;
+    }
+    const s = await res.json();
+    for (const n of s.notices) {
+      // The ones from before this page opened are not news.
+      if (!firstPoll) toast(n.text);
+      lastNotice = Math.max(lastNotice, n.id);
+    }
+    firstPoll = false;
+    state = s;
+    $("dot").className = "dot on";
+    $("unpaired").hidden = true;
+    $("main").hidden = false;
+    render();
+  } catch {
+    $("dot").className = "dot bad";
+    $("status").textContent = T.offline;
+  }
+}
+
+function option(value, text) {
+  const o = document.createElement("option");
+  o.value = value;
+  o.textContent = text;
+  return o;
+}
+
+function group(label, items) {
+  const g = document.createElement("optgroup");
+  g.label = label;
+  items.forEach((i) => g.appendChild(i));
+  return g;
+}
+
+// A select filled again only when its options change, so a choice in progress is kept.
+function setOptions(sel, build) {
+  const tmp = document.createElement("select");
+  build(tmp);
+  if (tmp.innerHTML === sel.dataset.last) return;
+  const keep = sel.value;
+  sel.innerHTML = tmp.innerHTML;
+  sel.dataset.last = tmp.innerHTML;
+  if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+}
+
+function gameOptions(sel, withPaste) {
+  sel.appendChild(option("", T.pick));
+  sel.appendChild(group(T.game, state.games.map((g) => option(g.game, g.name))));
+  if (withPaste) sel.appendChild(option("__paste", T.pasteLink));
+}
+
+function render() {
+  $("status").textContent = state.text;
+  const playable = state.accounts.filter((a) => !a.expired);
+  setOptions($("who"), (sel) => {
+    sel.appendChild(group(T.accounts, playable.map((a) => option("account:" + a.key, a.name + (a.handle ? " (" + a.handle + ")" : "")))));
+    if (state.groups.length) sel.appendChild(group(T.groups, state.groups.map((g) => option("group:" + g.id, g.name + " (" + g.count + ")"))));
+    if (state.profiles.length) sel.appendChild(group(T.profiles, state.profiles.map((p) => option("profile:" + p.id, p.name + " · " + p.game))));
+  });
+  setOptions($("game"), (sel) => gameOptions(sel, true));
+  whoChanged();
+
+  const list = $("accounts");
+  const open = new Set();
+  for (const a of state.accounts) {
+    open.add(a.key);
+    let card = list.querySelector('[data-key="' + CSS.escape(a.key) + '"]');
+    if (!card) {
+      card = accountCard(a);
+      list.appendChild(card);
+    }
+    updateCard(card, a);
+  }
+  list.querySelectorAll("[data-key]").forEach((c) => !open.has(c.dataset.key) && c.remove());
+  $("wallBtn").disabled = !state.accounts.some((a) => a.clients.some((c) => c.window));
+  $("printAll").disabled = $("wallBtn").disabled;
+}
+
+function whoChanged() {
+  const who = $("who").value;
+  const profile = who.startsWith("profile:");
+  $("game").disabled = profile;
+  $("link").hidden = profile || $("game").value !== "__paste";
+  $("sameRow").hidden = !who.startsWith("group:");
+}
+$("who").addEventListener("change", whoChanged);
+$("game").addEventListener("change", whoChanged);
+$("link").placeholder = T.linkPlaceholder;
+
+$("go").addEventListener("click", () => {
+  const [kind, ...rest] = $("who").value.split(":");
+  const id = rest.join(":");
+  const game = $("game").value === "__paste" ? $("link").value : $("game").value;
+  if (!id) return;
+  act("/api/play", { kind, id, game, sameServer: $("same").checked });
+});
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function accountCard(a) {
+  const card = el("div", "card acc");
+  card.dataset.key = a.key;
+  const head = el("div", "acc-head");
+  const name = el("span", "acc-name");
+  const handle = el("span", "muted");
+  head.append(name, handle);
+  const st = el("div", "state");
+  const rowA = el("div", "row");
+  const live = el("button", "", T.live);
+  const print = el("button", "", T.print);
+  const eco = el("button", "", T.eco);
+  const rejoin = el("button", "", T.rejoin);
+  const close = el("button", "danger", T.close);
+  rowA.append(live, print, eco, rejoin, close);
+  const rowB = el("div", "row");
+  const gameSel = el("select");
+  const switchBtn = el("button", "", T.switchGame);
+  rowB.append(gameSel, switchBtn);
+  const rowC = el("div", "row");
+  const followSel = el("select");
+  const followBtn = el("button", "", T.follow);
+  rowC.append(followSel, followBtn);
+  card.append(head, st, rowA, rowB, rowC);
+  const nm = () => card.querySelector(".acc-name").textContent;
+
+  live.onclick = () => openLive(a.key, nm());
+  print.onclick = () => openPrint("/api/print?account=" + encodeURIComponent(a.key), nm());
+  eco.onclick = () => act("/api/eco", { account: a.key, on: !eco.classList.contains("on") });
+  close.onclick = () => confirm(fill(T.confirmClose, { name: nm() })) && act("/api/close", { account: a.key });
+  rejoin.onclick = () => confirm(fill(T.confirmRejoin, { name: nm() })) && act("/api/rejoin", { account: a.key });
+  switchBtn.onclick = () => {
+    const g = gameSel.value;
+    if (!g) return;
+    const label = gameSel.options[gameSel.selectedIndex].textContent;
+    confirm(fill(T.confirmSwitch, { name: nm(), game: label })) && act("/api/switch", { account: a.key, game: g });
+  };
+  followBtn.onclick = () => {
+    const t = followSel.value;
+    if (!t) return;
+    const label = followSel.options[followSel.selectedIndex].textContent;
+    confirm(fill(T.confirmFollow, { name: nm(), target: label })) && act("/api/follow", { account: a.key, target: t });
+  };
+  card._parts = { name, handle, st, live, print, eco, rejoin, close, gameSel, switchBtn, followSel, followBtn };
+  return card;
+}
+
+function updateCard(card, a) {
+  const p = card._parts;
+  p.name.textContent = a.name;
+  p.handle.textContent = a.handle || "";
+  const c = a.clients[0];
+  p.st.className = "state " + (c ? c.state : "");
+  p.st.textContent = c
+    ? c.stateText + (c.gameName ? " · " + c.gameName : "") + (c.reason ? " (" + c.reason + ")" : "") + " · CPU " + Math.round(c.cpu) + "% · " + c.ramMb + " MB" + (c.minimized ? " · " + T.minimized.split(":")[0] : "")
+    : a.expired
+      ? T.expired
+      : T.closed;
+  const hasWindow = !!(c && c.window);
+  p.live.disabled = !hasWindow;
+  p.print.disabled = !hasWindow;
+  p.close.disabled = !c;
+  p.rejoin.disabled = a.expired;
+  p.eco.classList.toggle("on", a.eco);
+  p.switchBtn.disabled = a.expired;
+  setOptions(p.gameSel, (sel) => gameOptions(sel, false));
+  const others = state.accounts.filter((o) => o.key !== a.key && o.clients.length);
+  setOptions(p.followSel, (sel) => {
+    sel.appendChild(option("", T.pick));
+    others.forEach((o) => sel.appendChild(option(o.key, o.name)));
+  });
+  p.followBtn.disabled = a.expired || !others.length;
+  p.followSel.disabled = !others.length;
+}
+
+// ---- pictures: a look only ----
+let watching = 0;
+
+function openSheet(title) {
+  watching++;
+  $("sheetTitle").textContent = title;
+  $("sheetBody").innerHTML = "";
+  $("sheet").classList.add("open");
+  return watching;
+}
+$("back").onclick = () => {
+  watching++;
+  $("sheet").classList.remove("open");
+  $("sheetBody").innerHTML = "";
+};
+
+function frame() {
+  const box = el("div");
+  const img = el("img");
+  img.alt = "";
+  img.hidden = true;
+  const ph = el("div", "placeholder", "...");
+  box.append(img, ph);
+  return { box, img, ph };
+}
+
+/** Asks one picture at a time, the next only after the last one came, while `run` is current. */
+async function loop(account, f, width, every, run) {
+  let url = null;
+  while (run === watching) {
+    if (document.visibilityState === "visible") {
+      try {
+        const res = await api("/api/shot?account=" + encodeURIComponent(account) + "&w=" + width);
+        if (run !== watching) break;
+        if (res.ok) {
+          const next = URL.createObjectURL(await res.blob());
+          f.img.src = next;
+          if (url) URL.revokeObjectURL(url);
+          url = next;
+          f.img.hidden = false;
+          f.ph.hidden = true;
+        } else {
+          const j = await res.json().catch(() => ({}));
+          f.ph.textContent = j.minimized ? T.minimized : j.error || T.noWindow;
+          f.ph.hidden = false;
+          f.img.hidden = true;
+        }
+      } catch {
+        f.ph.textContent = T.offline;
+        f.ph.hidden = false;
+        f.img.hidden = true;
+      }
+    }
+    await new Promise((r) => setTimeout(r, every));
+  }
+  if (url) URL.revokeObjectURL(url);
+}
+
+function openLive(account, name) {
+  const run = openSheet(name);
+  const f = frame();
+  $("sheetBody").append(f.box);
+  loop(account, f, Math.min(1280, Math.round(screen.width * (devicePixelRatio || 1))), LIVE_MS, run);
+}
+
+$("wallBtn").onclick = () => {
+  const run = openSheet(T.wall);
+  const wall = el("div", "wall");
+  $("sheetBody").append(wall);
+  for (const a of state.accounts.filter((a) => a.clients.some((c) => c.window))) {
+    const tile = el("div", "tile");
+    const f = frame();
+    tile.append(f.box, el("div", "muted", a.name));
+    wall.append(tile);
+    loop(a.key, f, 480, WALL_MS, run);
+  }
+};
+
+async function openPrint(path, title) {
+  openSheet(title);
+  const f = frame();
+  $("sheetBody").append(f.box, el("p", "muted", T.saveHint));
+  try {
+    const res = await api(path);
+    if (!res.ok) {
+      f.ph.textContent = (await res.json().catch(() => ({}))).error || T.noWindow;
+      return;
+    }
+    f.img.src = URL.createObjectURL(await res.blob());
+    f.img.hidden = false;
+    f.ph.hidden = true;
+  } catch {
+    f.ph.textContent = T.offline;
+  }
+}
+$("printAll").onclick = () => openPrint("/api/print", T.printAll);
+
+poll();
+setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && poll());
+</script>
+</body>
+</html>

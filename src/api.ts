@@ -13,7 +13,13 @@ export type Settings = {
   alertDiscord: boolean;
   discordWebhook: string;
   loginCheck: boolean;
+  /** The phone page on the home network (phone.rs). */
+  phone: boolean;
+  /** Discord's "Playing Quackblox" (discord.rs). */
+  richPresence: boolean;
 };
+/** The phone page: `links` (the home network's and Tailscale's) carry the pairing key after '#'. */
+export type PhoneInfo = { on: boolean; listening: boolean; port: number; error: string | null; links: { kind: "lan" | "tailscale"; url: string; qr: string }[] };
 /** Where a client is, from its log. "dropped": out of the server, Roblox's error dialog on screen. */
 export type ClientState = "starting" | "inGame" | "dropped" | "joinFailed";
 /** A Roblox client Quackblox opened. `account` is "app" or a saved account's id, as in `play`. */
@@ -108,6 +114,18 @@ export const api = {
   runProfile: (id: string) => invoke<Summary>("profile_run", { id }),
   /** The site logged in to a saved account, in a window of its own. */
   openSite: (account: string) => invoke<void>("site_open", { account }),
+  phoneInfo: () => invoke<PhoneInfo>("phone_info"),
+  /** Every phone paired with the old key stops working. */
+  phoneNewKey: () => invoke<PhoneInfo>("phone_new_key"),
+  /** The recent games, offered on the phone too. `game`: what `play` takes. */
+  phoneGames: (games: { game: string; name: string }[]) => invoke<void>("phone_games", { games }),
+  /** A live picture (JPEG) of the account's window. Fails with "minimized", "gone" or "none". */
+  captureFrame: (account: string, width: number) => invoke<ArrayBuffer>("capture_frame", { account, width }),
+  /** Saved to Pictures\Quackblox; one account, or all side by side. Says where. */
+  capturePrint: (account: string | null) => invoke<string>("capture_print", { account }),
+  /** Shows a print in its folder (only files in Pictures\Quackblox). */
+  reveal: (path: string) => invoke<void>("capture_reveal", { path }),
+  richPresenceAvailable: () => invoke<boolean>("rich_presence_available"),
   startup: () => invoke<boolean>("startup_get"),
   setStartup: (on: boolean) => invoke<boolean>("startup_set", { on }),
 };

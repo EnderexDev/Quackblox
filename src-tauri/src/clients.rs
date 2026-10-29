@@ -142,6 +142,9 @@ pub struct Clients {
     /// Every client seen starting (user, when, Unix seconds), open or ended, newest last: where a
     /// client's log window ends is the next start of the same user.
     starts: Mutex<Vec<(u64, u64)>>,
+    /// The game each account's last client was opened in, kept after it ends (a reopen from the
+    /// phone after a crash).
+    last_games: Mutex<std::collections::HashMap<String, String>>,
 }
 
 /// What the window sees of a client.
@@ -431,6 +434,9 @@ impl Clients {
             let extra = starts.len().saturating_sub(64);
             starts.drain(..extra);
         }
+        if !game.is_empty() {
+            self.last_games.lock().unwrap().insert(account.to_string(), game.to_string());
+        }
         let mut list = self.list.lock().unwrap();
         list.push(Client {
             pid,
@@ -537,6 +543,66 @@ impl Clients {
     fn windows_of(&self, account: &str) -> Vec<HWND> {
         self.list.lock().unwrap().iter().filter(|c| c.account == account).filter_map(|c| c.hwnd.map(hwnd)).collect()
     }
+
+    /// The account's first client window, for a picture of it (capture.rs).
+    pub fn window(&self, account: &str) -> Option<isize> {
+        self.windows_of(account).first().map(|w| w.0 as isize)
+    }
+
+    /// Each open client, for the phone page and the camera wall (phase 5).
+    pub fn live(&self) -> Vec<Live> {
+        self.list
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| Live {
+                account: c.account.clone(),
+                state: c.state,
+                cpu: c.cpu,
+                ram: c.ram,
+                window: c.hwnd,
+                game: c.game.clone(),
+                reason: if c.state == State::Dropped { c.tail.as_ref().and_then(|t| t.reason) } else { None },
+            })
+            .collect()
+    }
+
+    /// The game the account's newest client was opened in, open or ended since this start.
+    pub fn last_game(&self, account: &str) -> Option<String> {
+        let list = self.list.lock().unwrap();
+        if let Some(c) = list.iter().filter(|c| c.account == account && !c.game.is_empty()).max_by_key(|c| c.created) {
+            return Some(c.game.clone());
+        }
+        drop(list);
+        self.last_games.lock().unwrap().get(account).cloned()
+    }
+
+    pub fn eco_on(&self, account: &str) -> bool {
+        self.eco.lock().unwrap().contains(account)
+    }
+
+    /// Ends every client of the account, each marked as ended by Quackblox (no drop told, no
+    /// rejoin). Says how many are still running after. Blocks up to 3 s a client: call it off
+    /// the async runtime.
+    pub fn end_account(&self, account: &str) -> usize {
+        let pids: Vec<u32> = self.list.lock().unwrap().iter().filter(|c| c.account == account).map(|c| c.pid).collect();
+        for &pid in &pids {
+            self.end(pid);
+        }
+        pids.into_iter().filter(|&p| running(p) && self.pids().contains(&p)).count()
+    }
+}
+
+/// What the phone page and the camera wall see of an open client. Nothing of the login.
+pub struct Live {
+    pub account: String,
+    pub state: State,
+    pub cpu: f32,
+    pub ram: u64,
+    pub window: Option<isize>,
+    /// What `play` was given.
+    pub game: String,
+    pub reason: Option<u32>,
 }
 
 /// Reads clients.json, keeps the links whose process still runs with the same creation time, and
@@ -595,6 +661,7 @@ pub fn start(app: &AppHandle) {
         rejoin: Mutex::new(rejoin),
         gone: Mutex::new(vec![]),
         starts: Mutex::new(starts),
+        last_games: Mutex::new(std::collections::HashMap::new()),
     };
     clients.save(&clients.list.lock().unwrap());
     app.manage(clients);

@@ -20,6 +20,7 @@ import {
   UsersIcon,
   GlobeIcon,
   CommandIcon,
+  ScreenIcon,
 } from "./components/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
@@ -30,12 +31,17 @@ import { getLang, setLang, t as texts, useT, type Lang, type Texts } from "./i18
 import { errorNames } from "./errorCodes";
 import { OrganizeBlock, type Person } from "./components/Organize";
 import { Palette, type Command } from "./components/Palette";
+import { ExtrasBlock, print, ScreensSheet } from "./components/Screens";
 
 const NO_CLIENTS: Clients = { clients: [], eco: [], rejoin: [], others: 0 };
 type VigiaSettings = Pick<Settings, "alertWindows" | "alertDiscord" | "discordWebhook" | "loginCheck">;
 /** Only the watch's own fields: the whole set also carries the language, which must not ride along. */
 const vigiaOf = (s: Settings): VigiaSettings => ({ alertWindows: s.alertWindows, alertDiscord: s.alertDiscord, discordWebhook: s.discordWebhook, loginCheck: s.loginCheck });
 const NO_VIGIA: VigiaSettings = { alertWindows: true, alertDiscord: false, discordWebhook: "", loginCheck: false };
+/** The phone page and Discord's presence (phase 5): off until he turns them on. */
+type ExtrasSettings = Pick<Settings, "phone" | "richPresence">;
+const extrasOf = (s: Settings): ExtrasSettings => ({ phone: s.phone, richPresence: s.richPresence });
+const NO_EXTRAS: ExtrasSettings = { phone: false, richPresence: false };
 /** How long the duck panics after a drop, and cheers once every client is in. */
 const PANIC_MS = 8000;
 const CHEER_MS = 4000;
@@ -108,6 +114,8 @@ export default function App() {
   const [stuck, setStuck] = useState(false);
   const [hotkeys, setHotkeys] = useState(true);
   const [vigia, setVigia] = useState<VigiaSettings>(NO_VIGIA);
+  const [extras, setExtras] = useState<ExtrasSettings>(NO_EXTRAS);
+  const [screens, setScreens] = useState(false);
   /** The name of the account that just dropped, while the duck panics. */
   const [alarm, setAlarm] = useState<string | null>(null);
   const [cheer, setCheer] = useState(false);
@@ -147,6 +155,7 @@ export default function App() {
       setAutoClose(s.autoClose);
       setHotkeys(s.hotkeys);
       setVigia(vigiaOf(s));
+      setExtras(extrasOf(s));
     });
     api.clients().then(setClients);
     loadAccounts();
@@ -271,6 +280,11 @@ export default function App() {
       return next;
     });
   };
+
+  // The phone page offers the same recent games.
+  useEffect(() => {
+    api.phoneGames(recents.map((r) => ({ game: gameArg(r), name: r.name }))).catch(() => {});
+  }, [recents]);
 
   const forgetRecent = (g: Game) =>
     setRecents((rs) => {
@@ -422,7 +436,7 @@ export default function App() {
     if (l === before) return;
     setLang(l);
     api
-      .setSettings({ autoClose, hotkeys, ...vigia, language: l })
+      .setSettings({ autoClose, hotkeys, ...vigia, ...extras, language: l })
       .then((s) => setLang(s.language))
       .catch((e) => {
         setLang(before);
@@ -434,11 +448,12 @@ export default function App() {
   const saveSettings = (change: Partial<Omit<Settings, "language">>) => {
     setSavingSettings(true);
     return api
-      .setSettings({ autoClose, hotkeys, ...vigia, language: getLang(), ...change })
+      .setSettings({ autoClose, hotkeys, ...vigia, ...extras, language: getLang(), ...change })
       .then((s) => {
         setAutoClose(s.autoClose);
         setHotkeys(s.hotkeys);
         setVigia(vigiaOf(s));
+        setExtras(extrasOf(s));
         return true;
       })
       .catch((e) => {
@@ -552,6 +567,11 @@ export default function App() {
     ...accounts.map((a) => ({ key: String(a.id), name: a.displayName === a.name ? a.name : `${a.displayName} @${a.name}`, avatar: avatars[a.id] })),
     { key: "app", name: appUser ? `${t.robloxApp} (${appUser.displayName})` : t.robloxApp, avatar: appUser ? avatars[appUser.id] : undefined },
   ];
+  // The camera wall: each account with a client window, in card order.
+  const screenList = [...accounts.map((a) => ({ key: String(a.id), name: a.displayName })), { key: "app", name: appUser?.displayName ?? t.robloxApp }].filter((s) =>
+    clientsOf(s.key).some((c) => c.window),
+  );
+  const closeScreens = useCallback(() => setScreens(false), []);
   const commands = (): Command[] => {
     // Two accounts may share a display name (the Roblox app's is often a saved one): the hint says which.
     const playable = [
@@ -567,6 +587,8 @@ export default function App() {
     for (const pr of lists.profiles.filter((p) => canRun(p.accounts.length))) out.push({ id: `profile-${pr.id}`, label: t.cmdRunProfile(pr.name), hint: pr.game.name, run: () => runProfile(pr) });
     for (const r of recents) out.push({ id: `game-${r.placeId}-${r.linkCode}`, label: t.cmdGame(r.name), run: () => pickGame(r) });
     if (windowsOpen) out.push({ id: "grid", label: t.grid, run: () => api.grid().then((n) => notify(t.gridDone(n), "info")).catch(toast) });
+    if (screenList.length) out.push({ id: "screens", label: t.wallTitle, run: () => setScreens(true) });
+    if (screenList.length) out.push({ id: "print-all", label: t.printAll, run: () => print(null, t) });
     if (windowsOpen > 1) out.push({ id: "minimize", label: t.minimizeOthers, hint: "Ctrl+Shift+0", run: () => api.minimizeOthers().catch(toast) });
     for (const a of playable) {
       if (clientsOf(a.key).some((c) => c.window)) out.push({ id: `focus-${a.key}`, label: t.cmdFocus(a.name), hint: a.who, run: () => api.focusClient(a.key).catch(toast) });
@@ -634,6 +656,9 @@ export default function App() {
                 <button className="pill-btn ghost small" disabled={windowsOpen < 2} onClick={() => api.minimizeOthers().catch(toast)} title={t.minimizeOthersTitle}>
                   <MinimizeIcon size={15} /> {t.minimizeOthers}
                 </button>
+                <button className="pill-btn ghost small" onClick={() => setScreens(true)} title={t.screensTitle}>
+                  <ScreenIcon size={15} /> {t.screens}
+                </button>
               </div>
             )}
 
@@ -700,6 +725,7 @@ export default function App() {
             onRunProfile={runProfile}
           />
           <VigiaBlock settings={vigia} saving={savingSettings} onSave={saveSettings} />
+          <ExtrasBlock phone={extras.phone} richPresence={extras.richPresence} saving={savingSettings} onSave={saveSettings} />
           <StatsBlock accounts={accounts} appUser={appUser} />
           <ErrorLookup />
         </main>
@@ -736,6 +762,7 @@ export default function App() {
           }}
         />
       )}
+      {screens && <ScreensSheet screens={screenList} onClose={closeScreens} />}
       {palette && <Palette commands={commands()} onClose={() => setPalette(false)} />}
       <Toasts />
     </>

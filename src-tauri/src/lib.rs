@@ -8,13 +8,16 @@ macro_rules! tr {
 
 mod accounts;
 mod app_account;
+mod capture;
 mod clients;
 mod desktop;
+mod discord;
 mod hotkeys;
 mod launch;
 mod logs;
 mod multi;
 mod organize;
+mod phone;
 mod roblox;
 mod settings;
 mod setup;
@@ -48,6 +51,8 @@ pub fn run() {
             vigia::start(app.handle().clone());
             organize::start(app.handle().clone());
             site::clean_up(app.handle());
+            phone::apply(app.handle());
+            discord::start(app.handle().clone());
             desktop::setup(app)?;
             Ok(())
         })
@@ -92,6 +97,13 @@ pub fn run() {
             organize::profile_run,
             site::site_open,
             site::site_open_list,
+            capture::capture_frame,
+            capture::capture_print,
+            capture::capture_reveal,
+            phone::phone_info,
+            phone::phone_new_key,
+            phone::phone_games,
+            settings::rich_presence_available,
         ])
         .run(context)
         .expect("error while running tauri application");
