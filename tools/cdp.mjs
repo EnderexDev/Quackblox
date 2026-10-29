@@ -7,7 +7,9 @@ import { writeFileSync } from "node:fs";
 
 const port = process.env.CDP_PORT ?? 9333;
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-const page = targets.find((t) => t.type === "page" && t.url.includes("tauri.localhost")) ?? targets[0];
+// CDP_MATCH picks another page by its address (the phone page in a headless Edge: CDP_MATCH=38251).
+const match = process.env.CDP_MATCH ?? "tauri.localhost";
+const page = targets.find((t) => t.type === "page" && t.url.includes(match)) ?? targets[0];
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 await new Promise((r) => ws.addEventListener("open", r, { once: true }));
 let id = 0;

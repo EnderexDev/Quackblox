@@ -537,11 +537,18 @@ fn state_text(state: State) -> String {
 fn state(app: &AppHandle, since: u64) -> serde_json::Value {
     let clients = app.state::<Clients>();
     let live = clients.live();
-    let mut people: Vec<(String, String, String, bool)> = crate::accounts::saved_names(app);
-    if let Some(u) = crate::accounts::app_user_cached() {
-        people.push(("app".into(), u.display_name.clone(), tr!("app do Roblox", "Roblox app"), false));
-    } else if live.iter().any(|c| c.account == "app") {
-        people.push(("app".into(), "Roblox".into(), tr!("app do Roblox", "Roblox app"), false));
+    // Two accounts often share a display name (the Roblox app's is usually a saved one): the @name
+    // goes beside it when it differs, and the app's card says it is the app's.
+    let mut people: Vec<(String, String, String, bool)> = crate::accounts::saved_names(app)
+        .into_iter()
+        .map(|(key, display, name, expired)| {
+            let label = if display == name { name.clone() } else { format!("{display} @{name}") };
+            (key, label, format!("@{name}"), expired)
+        })
+        .collect();
+    let app_name = crate::accounts::app_user_cached().map(|u| u.display_name).or_else(|| live.iter().any(|c| c.account == "app").then(|| "Roblox".into()));
+    if let Some(n) = app_name {
+        people.push(("app".into(), tr!("{n} (app do Roblox)", "{n} (Roblox app)"), tr!("app do Roblox", "Roblox app"), false));
     }
     let mut lines = vec![];
     let mut accounts = vec![];

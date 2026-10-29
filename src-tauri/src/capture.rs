@@ -451,4 +451,51 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
         }
     }
+
+    /// Busy time (kernel + user, 100 ns units) of a process.
+    fn busy(pid: u32) -> u64 {
+        use windows::Win32::Foundation::{CloseHandle, FILETIME};
+        use windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        let Ok(h) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { return 0 };
+        let (mut c, mut e, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let _ = unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) };
+        let _ = unsafe { CloseHandle(h) };
+        let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+        t(k) + t(u)
+    }
+
+    /// The CPU the live view costs, by hand, in a release build with real clients open:
+    /// QUACKBLOX_CAPTURE_HWNDS=<h1,h2> QUACKBLOX_CAPTURE_PIDS=<roblox pids,dwm pid> cargo test
+    /// --release measure_capture_cpu -- --ignored --nocapture. For each rate (pictures a second per
+    /// window, 0 first as the baseline), 20 s of capture at 640 px wide: the CPU of the capturer and
+    /// of each pid, as a share of one core.
+    #[test]
+    #[ignore]
+    fn measure_capture_cpu() {
+        let hwnds: Vec<isize> = std::env::var("QUACKBLOX_CAPTURE_HWNDS").unwrap().split(',').map(|h| h.trim().parse().unwrap()).collect();
+        let pids: Vec<u32> = std::env::var("QUACKBLOX_CAPTURE_PIDS").unwrap().split(',').map(|p| p.trim().parse().unwrap()).collect();
+        let me = std::process::id();
+        let secs = 20u64;
+        for rate in [0u64, 2, 4, 8] {
+            let before: Vec<u64> = std::iter::once(me).chain(pids.iter().copied()).map(busy).collect();
+            let start = Instant::now();
+            let mut shots = 0;
+            while start.elapsed() < Duration::from_secs(secs) {
+                let tick = Instant::now();
+                if rate > 0 {
+                    for &h in &hwnds {
+                        if matches!(jpeg(h, 640, 70), Shot::Jpeg(_)) {
+                            shots += 1;
+                        }
+                    }
+                }
+                let every = Duration::from_millis(if rate > 0 { 1000 / rate } else { 1000 });
+                std::thread::sleep(every.saturating_sub(tick.elapsed()));
+            }
+            let wall = start.elapsed().as_nanos() as f64 / 100.0;
+            let after: Vec<u64> = std::iter::once(me).chain(pids.iter().copied()).map(busy).collect();
+            let pct: Vec<String> = before.iter().zip(&after).map(|(b, a)| format!("{:.1}%", (a - b) as f64 / wall * 100.0)).collect();
+            println!("rate {rate}/s, {shots} pictures: capturer {}, pids {:?} -> {}", pct[0], pids, pct[1..].join(" "));
+        }
+    }
 }

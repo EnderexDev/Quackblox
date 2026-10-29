@@ -11,6 +11,8 @@
 <style>
   :root { color-scheme: dark; --bg: #0a0a0c; --card: #16161b; --line: #26262e; --text: #ececf1; --muted: #9a9aa6; --accent: #ffcc33; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24; }
   * { box-sizing: border-box; }
+  /* Above every display rule: a hidden element stays hidden even when its class lays it out. */
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 12px 12px calc(80px + env(safe-area-inset-bottom)); }
   h1 { font-size: 20px; margin: 4px 0 12px; display: flex; align-items: center; gap: 8px; }
   h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
@@ -202,7 +204,7 @@ function render() {
   $("status").textContent = state.text;
   const playable = state.accounts.filter((a) => !a.expired);
   setOptions($("who"), (sel) => {
-    sel.appendChild(group(T.accounts, playable.map((a) => option("account:" + a.key, a.name + (a.handle ? " (" + a.handle + ")" : "")))));
+    sel.appendChild(group(T.accounts, playable.map((a) => option("account:" + a.key, a.name))));
     if (state.groups.length) sel.appendChild(group(T.groups, state.groups.map((g) => option("group:" + g.id, g.name + " (" + g.count + ")"))));
     if (state.profiles.length) sel.appendChild(group(T.profiles, state.profiles.map((p) => option("profile:" + p.id, p.name + " · " + p.game))));
   });
@@ -301,7 +303,6 @@ function accountCard(a) {
 function updateCard(card, a) {
   const p = card._parts;
   p.name.textContent = a.name;
-  p.handle.textContent = a.handle || "";
   const c = a.clients[0];
   p.st.className = "state " + (c ? c.state : "");
   p.st.textContent = c

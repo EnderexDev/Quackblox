@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager};
 use crate::clients::{Clients, State};
 
 /// Quackblox's application in Discord's developer portal: its name is what the profile shows.
-const CLIENT_ID: &str = "";
+const CLIENT_ID: &str = "1565175946934222978";
 /// A change shows within this; the game names are looked up once each.
 const EVERY: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_secs(60);
