@@ -17,6 +17,7 @@ use crate::clients::{Clients, State};
 const CLIENT_ID: &str = "";
 /// A change shows within this; the game names are looked up once each.
 const EVERY: Duration = Duration::from_secs(5);
+const RESEND: Duration = Duration::from_secs(60);
 /// Shown beside the game's picture.
 const ICON: &str = "https://raw.githubusercontent.com/EnderexDev/Quackblox/master/src-tauri/icons/128x128.png";
 
@@ -96,7 +97,8 @@ fn now_playing(app: &AppHandle, names: &mut HashMap<String, (String, Option<Stri
             games.push(entry.clone());
         }
     }
-    let n = playing.len();
+    // Accounts, not windows: one account with two clients in game counts once.
+    let n = playing.iter().map(|c| &c.account).collect::<std::collections::HashSet<_>>().len();
     let details = match games.as_slice() {
         [(name, _)] => name.clone(),
         [] => "Roblox".into(),
@@ -123,6 +125,7 @@ pub fn start(app: AppHandle) {
         let mut pipe: Option<Pipe> = None;
         let mut names = HashMap::new();
         let mut failed = HashMap::new();
+        let mut sent = std::time::Instant::now();
         let mut shown = serde_json::Value::Null;
         let mut since = 0;
         loop {
@@ -135,12 +138,18 @@ pub fn start(app: AppHandle) {
                 since = crate::win::unix_now();
                 want = now_playing(&app, &mut names, &mut failed, since);
             }
-            if want != shown {
+            // Sent again now and then even unchanged: a Discord restarted meanwhile has lost it, and
+            // the failed send is how a closed pipe is noticed.
+            let stale = !want.is_null() && sent.elapsed() >= RESEND;
+            if want != shown || stale {
                 if pipe.is_none() && !want.is_null() {
                     pipe = Pipe::handshake();
                 }
                 match pipe.as_mut().map(|p| p.activity(want.clone())) {
-                    Some(Ok(())) => shown = want.clone(),
+                    Some(Ok(())) => {
+                        shown = want.clone();
+                        sent = std::time::Instant::now();
+                    }
                     Some(Err(e)) => {
                         eprintln!("discord: presence not set: {e}");
                         pipe = None;

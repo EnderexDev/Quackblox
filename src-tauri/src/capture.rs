@@ -354,14 +354,20 @@ pub async fn capture_print(app: tauri::AppHandle, account: Option<String>) -> Re
     let dir = prints_folder(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| tr!("não consegui criar a pasta: {e}", "couldn't create the folder: {e}"))?;
     let now = crate::win::local_now();
-    let mut path = dir.join(format!("Quackblox {} {}.jpg", now.day, now.clock.replace(':', "-")));
-    let mut n = 2;
-    while path.exists() {
-        path = dir.join(format!("Quackblox {} {} ({n}).jpg", now.day, now.clock.replace(':', "-")));
-        n += 1;
+    // Created only when the name is free: two prints in the same second never write over each other.
+    let stamp = format!("{} {}", now.day, now.clock.replace(':', "-"));
+    for n in 1..100 {
+        let path = dir.join(if n == 1 { format!("Quackblox {stamp}.jpg") } else { format!("Quackblox {stamp} ({n}).jpg") });
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                std::io::Write::write_all(&mut f, &bytes).map_err(|e| tr!("não consegui salvar o print: {e}", "couldn't save the print: {e}"))?;
+                return Ok(path.display().to_string());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(tr!("não consegui salvar o print: {e}", "couldn't save the print: {e}")),
+        }
     }
-    std::fs::write(&path, bytes).map_err(|e| tr!("não consegui salvar o print: {e}", "couldn't save the print: {e}"))?;
-    Ok(path.display().to_string())
+    Err(tr!("não consegui salvar o print: nome ocupado", "couldn't save the print: name taken"))
 }
 
 fn prints_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {

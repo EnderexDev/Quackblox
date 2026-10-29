@@ -70,8 +70,9 @@ pub struct GameItem {
 }
 
 fn notice(text: String) {
-    let id = NOTICE_ID.fetch_add(1, Ordering::Relaxed) + 1;
+    // The id is taken under the lock, so the list stays in id order for the page's `since`.
     let mut n = NOTICES.lock().unwrap();
+    let id = NOTICE_ID.fetch_add(1, Ordering::Relaxed) + 1;
     n.push((id, text));
     let extra = n.len().saturating_sub(20);
     n.drain(..extra);
@@ -285,10 +286,16 @@ fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8], extra:
     // Written in pieces against one deadline: a phone reading a byte at a time does not hold the
     // connection past it (the write timeout alone counts each piece apart).
     let deadline = Instant::now() + Duration::from_secs(15);
-    for piece in head.as_bytes().chunks(16 * 1024).chain(body.chunks(16 * 1024)) {
-        let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { return };
-        if stream.set_write_timeout(Some(left)).is_err() || stream.write_all(piece).is_err() {
-            return;
+    for mut piece in [head.as_bytes(), body] {
+        while !piece.is_empty() {
+            let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { return };
+            if stream.set_write_timeout(Some(left)).is_err() {
+                return;
+            }
+            match stream.write(piece) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => piece = &piece[n..],
+            }
         }
     }
 }
@@ -318,7 +325,10 @@ fn authorized(app: &AppHandle, req: &Request, ip: IpAddr) -> Result<(), &'static
         }
     }
     let Ok(want) = key(app) else { return Err("503 Service Unavailable") };
-    let given = req.headers.get("x-quackblox-key").map(String::as_str).unwrap_or("");
+    // A request with no key header is refused without counting: a page of another site open on the
+    // phone can send those (it cannot set the header without a preflight this server never
+    // answers), and must not lock the phone out.
+    let Some(given) = req.headers.get("x-quackblox-key").map(String::as_str) else { return Err("401 Unauthorized") };
     if same(given, &want) {
         if let Some(f) = FAILS.lock().unwrap().as_mut() {
             f.remove(&ip);
@@ -466,19 +476,32 @@ fn name_of(app: &AppHandle, key: &str) -> String {
 /// A game's name: from the recents, the profiles, the names already looked up; else looked up in
 /// the background and the game's link shown meanwhile.
 fn game_name(app: &AppHandle, game: &str) -> Option<String> {
+    known_name(app, game).or_else(|| {
+        look_up_name(app, game);
+        None
+    })
+}
+
+/// A game's name from what is already known, asking no one.
+fn known_name(app: &AppHandle, game: &str) -> Option<String> {
     if let Some(g) = RECENTS.lock().unwrap().iter().find(|g| g.game == game) {
         return Some(g.name.clone());
     }
     if let Some(p) = crate::organize::organize_get(app.clone()).profiles.iter().find(|p| crate::organize::game_arg(&p.game) == game) {
         return Some(p.game.name.clone());
     }
+    NAMES.lock().unwrap().as_ref().and_then(|n| n.get(game)).filter(|n| !n.is_empty()).cloned()
+}
+
+/// Looks the game's name up in the background, once (and again a minute after a failure).
+fn look_up_name(app: &AppHandle, game: &str) {
     let mut names = NAMES.lock().unwrap();
     let names = names.get_or_insert_with(HashMap::new);
-    if let Some(n) = names.get(game) {
-        return (!n.is_empty()).then(|| n.clone());
+    if names.contains_key(game) {
+        return;
     }
     if FAILED.lock().unwrap().as_ref().and_then(|f| f.get(game)).is_some_and(|at| at.elapsed() < NAME_RETRY) {
-        return None;
+        return;
     }
     // Marked as asked, so a page polling every few seconds asks Roblox once.
     names.insert(game.to_string(), String::new());
@@ -496,7 +519,6 @@ fn game_name(app: &AppHandle, game: &str) -> Option<String> {
             }
         };
     });
-    None
 }
 
 fn state_text(state: State) -> String {
@@ -604,7 +626,7 @@ async fn resolve(app: &AppHandle, game: &str) -> Result<(String, String), String
     }
     // A share link is not something `play` takes: it is always resolved, even with its name known.
     if crate::roblox::share_code(game).is_none() {
-        if let Some(name) = game_name(app, game) {
+        if let Some(name) = known_name(app, game) {
             return Ok((game.to_string(), name));
         }
     }
