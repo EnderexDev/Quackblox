@@ -72,7 +72,7 @@ impl Pipe {
 
 /// What the profile shows now: the game (or how many games) and how many accounts are in one.
 /// Null while no account is in a game.
-fn now_playing(app: &AppHandle, names: &mut HashMap<String, (String, Option<String>)>, since: u64) -> serde_json::Value {
+fn now_playing(app: &AppHandle, names: &mut HashMap<String, (String, Option<String>)>, failed: &mut HashMap<String, std::time::Instant>, since: u64) -> serde_json::Value {
     let live = app.state::<Clients>().live();
     let playing: Vec<_> = live.iter().filter(|c| c.state == State::InGame).collect();
     if playing.is_empty() {
@@ -80,12 +80,18 @@ fn now_playing(app: &AppHandle, names: &mut HashMap<String, (String, Option<Stri
     }
     let mut games: Vec<(String, Option<String>)> = vec![];
     for c in &playing {
-        let entry = names.entry(c.game.clone()).or_insert_with(|| {
+        // A failed lookup is not kept: the game is asked again a minute later.
+        if !names.contains_key(&c.game) && failed.get(&c.game).is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
             match tauri::async_runtime::block_on(crate::accounts::game_info(app.clone(), c.game.clone())) {
-                Ok(g) => (g.name, g.icon),
-                Err(_) => (String::new(), None),
+                Ok(g) => {
+                    names.insert(c.game.clone(), (g.name, g.icon));
+                }
+                Err(_) => {
+                    failed.insert(c.game.clone(), std::time::Instant::now());
+                }
             }
-        });
+        }
+        let Some(entry) = names.get(&c.game) else { continue };
         if !entry.0.is_empty() && !games.iter().any(|g| g.0 == entry.0) {
             games.push(entry.clone());
         }
@@ -116,17 +122,18 @@ pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         let mut pipe: Option<Pipe> = None;
         let mut names = HashMap::new();
+        let mut failed = HashMap::new();
         let mut shown = serde_json::Value::Null;
         let mut since = 0;
         loop {
             let on = crate::settings::current().rich_presence;
-            let mut want = if on { now_playing(&app, &mut names, since) } else { serde_json::Value::Null };
+            let mut want = if on { now_playing(&app, &mut names, &mut failed, since) } else { serde_json::Value::Null };
             if want.is_null() {
                 since = 0;
             } else if since == 0 {
                 // Time in game counts from the first look that found an account in one.
                 since = crate::win::unix_now();
-                want = now_playing(&app, &mut names, since);
+                want = now_playing(&app, &mut names, &mut failed, since);
             }
             if want != shown {
                 if pipe.is_none() && !want.is_null() {

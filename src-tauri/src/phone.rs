@@ -54,6 +54,9 @@ static FAILS: Mutex<Option<HashMap<IpAddr, (u32, Instant)>>> = Mutex::new(None);
 static RECENTS: Mutex<Vec<GameItem>> = Mutex::new(Vec::new());
 /// Game names by what `play` takes, for the games of open clients.
 static NAMES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+/// Games whose name lookup failed, and when: asked again only after a while.
+static FAILED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+const NAME_RETRY: Duration = Duration::from_secs(60);
 /// What the phone's commands did, newest last, for the page to show as it polls.
 static NOTICES: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
 static NOTICE_ID: AtomicU64 = AtomicU64::new(0);
@@ -140,7 +143,18 @@ pub fn apply(app: &AppHandle) {
         *ERROR.lock().unwrap() = Some(e);
         return;
     }
-    let listener = match TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], PORT))) {
+    // The server before lets go of the port at its next look (100 ms): turned off and on at once,
+    // the bind is tried again for a moment.
+    let bind = || TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], PORT)));
+    let mut tried = bind();
+    for _ in 0..20 {
+        if tried.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        tried = bind();
+    }
+    let listener = match tried {
         Ok(l) => l,
         Err(e) => {
             *ERROR.lock().unwrap() = Some(tr!(
@@ -156,9 +170,14 @@ pub fn apply(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         while GENERATION.load(Ordering::SeqCst) == generation {
+            // Full: the next connection waits in the system's queue instead of being dropped.
+            if OPEN.load(Ordering::SeqCst) >= MAX_OPEN {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             match listener.accept() {
                 Ok((stream, peer)) => {
-                    if !allowed(peer.ip()) || OPEN.load(Ordering::SeqCst) >= MAX_OPEN {
+                    if !allowed(peer.ip()) {
                         continue;
                     }
                     OPEN.fetch_add(1, Ordering::SeqCst);
@@ -184,11 +203,19 @@ struct Request {
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    // One deadline for the whole request, not per read: a client sending a byte at a time does not
+    // hold a slot for ever.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let read = |stream: &mut TcpStream, chunk: &mut [u8]| -> Option<usize> {
+        let left = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+        stream.set_read_timeout(Some(left)).ok()?;
+        stream.read(chunk).ok()
+    };
     let mut buf = vec![];
     let mut chunk = [0u8; 4096];
     let head_end = loop {
-        let n = stream.read(&mut chunk).ok()?;
+        let n = read(stream, &mut chunk)?;
         if n == 0 {
             return None;
         }
@@ -212,7 +239,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     }
     let mut body = buf[head_end + 4..].to_vec();
     while body.len() < length {
-        let n = stream.read(&mut chunk).ok()?;
+        let n = read(stream, &mut chunk)?;
         if n == 0 {
             return None;
         }
@@ -255,8 +282,15 @@ fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8], extra:
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n{extra}\r\n",
         body.len()
     );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
+    // Written in pieces against one deadline: a phone reading a byte at a time does not hold the
+    // connection past it (the write timeout alone counts each piece apart).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for piece in head.as_bytes().chunks(16 * 1024).chain(body.chunks(16 * 1024)) {
+        let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { return };
+        if stream.set_write_timeout(Some(left)).is_err() || stream.write_all(piece).is_err() {
+            return;
+        }
+    }
 }
 
 fn json_reply(stream: &mut TcpStream, status: &str, value: serde_json::Value) {
@@ -294,6 +328,10 @@ fn authorized(app: &AppHandle, req: &Request, ip: IpAddr) -> Result<(), &'static
     {
         let mut guard = FAILS.lock().unwrap();
         let fails = guard.get_or_insert_with(HashMap::new);
+        // Addresses whose wait ended and that stopped trying are forgotten.
+        let now = Instant::now();
+        // Kept an hour past its wait, so the next wrong key doubles the wait instead of starting over.
+        fails.retain(|_, (_, until)| *until > now || now.duration_since(*until) < Duration::from_secs(3600));
         let e = fails.entry(ip).or_insert((0, Instant::now()));
         e.0 += 1;
         if e.0 >= FREE_TRIES {
@@ -439,13 +477,24 @@ fn game_name(app: &AppHandle, game: &str) -> Option<String> {
     if let Some(n) = names.get(game) {
         return (!n.is_empty()).then(|| n.clone());
     }
+    if FAILED.lock().unwrap().as_ref().and_then(|f| f.get(game)).is_some_and(|at| at.elapsed() < NAME_RETRY) {
+        return None;
+    }
     // Marked as asked, so a page polling every few seconds asks Roblox once.
     names.insert(game.to_string(), String::new());
     let (app, game) = (app.clone(), game.to_string());
     tauri::async_runtime::spawn(async move {
-        if let Ok(g) = crate::accounts::game_info(app, game.clone()).await {
-            NAMES.lock().unwrap().get_or_insert_with(HashMap::new).insert(game, g.name);
-        }
+        let found = crate::accounts::game_info(app, game.clone()).await;
+        let mut names = NAMES.lock().unwrap();
+        let names = names.get_or_insert_with(HashMap::new);
+        match found {
+            Ok(g) => names.insert(game, g.name),
+            // Asked again at a look a minute from now, not at every poll of the page.
+            Err(_) => {
+                FAILED.lock().unwrap().get_or_insert_with(HashMap::new).insert(game.clone(), Instant::now());
+                names.remove(&game)
+            }
+        };
     });
     None
 }
@@ -553,8 +602,11 @@ async fn resolve(app: &AppHandle, game: &str) -> Result<(String, String), String
     if game.is_empty() {
         return Err(tr!("escolhe um jogo primeiro", "pick a game first"));
     }
-    if let Some(name) = game_name(app, game) {
-        return Ok((game.to_string(), name));
+    // A share link is not something `play` takes: it is always resolved, even with its name known.
+    if crate::roblox::share_code(game).is_none() {
+        if let Some(name) = game_name(app, game) {
+            return Ok((game.to_string(), name));
+        }
     }
     let g = crate::accounts::game_info(app.clone(), game.to_string()).await?;
     let arg = crate::organize::game_arg(&g);

@@ -176,7 +176,7 @@ fn run(rx: Receiver<Request>) {
         let start = Instant::now();
         let mut got = read(g, s);
         // A capture just started has no frame yet: the first one comes in a moment.
-        while got.is_none() && s.last.is_none() && start.elapsed() < FIRST_FRAME {
+        while fresh && got.is_none() && start.elapsed() < FIRST_FRAME {
             std::thread::sleep(Duration::from_millis(15));
             got = read(g, s);
         }
