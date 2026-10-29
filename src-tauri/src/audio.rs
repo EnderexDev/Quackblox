@@ -40,3 +40,31 @@ pub fn apply(want: &[(u32, bool)]) -> usize {
     }
     changed
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mute of each audio session of the pids in QB_PIDS (comma separated), as the mixer has it.
+    /// A probe for a test with real clients: `QB_PIDS=1,2 cargo test mute_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn mute_probe() {
+        init_thread();
+        let pids: Vec<u32> = std::env::var("QB_PIDS").unwrap_or_default().split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        let devices = unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) }.unwrap();
+        let list = unsafe { devices.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }.unwrap();
+        for i in 0..unsafe { list.GetCount() }.unwrap() {
+            let manager = unsafe { list.Item(i).unwrap().Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }.unwrap();
+            let sessions = unsafe { manager.GetSessionEnumerator() }.unwrap();
+            for s in 0..unsafe { sessions.GetCount() }.unwrap() {
+                let control = unsafe { sessions.GetSession(s) }.unwrap();
+                let pid = unsafe { control.cast::<IAudioSessionControl2>().unwrap().GetProcessId() }.unwrap_or(0);
+                if pids.contains(&pid) {
+                    let muted = unsafe { control.cast::<ISimpleAudioVolume>().unwrap().GetMute() }.unwrap().as_bool();
+                    println!("device {i} pid {pid} muted {muted}");
+                }
+            }
+        }
+    }
+}

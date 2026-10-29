@@ -37,7 +37,16 @@ fn with<T>(app: &AppHandle, f: impl FnOnce(&mut Store) -> T) -> T {
     let store = guard.get_or_insert_with(|| {
         let dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
         let path = dir.join("drops.json");
-        let list = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let list = match std::fs::read_to_string(&path) {
+            Err(_) => vec![],
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+                // Kept aside, so the next drop never writes over the history in it.
+                let aside = path.with_extension(format!("broken-{}.json", crate::win::unix_now()));
+                eprintln!("history: drops.json unreadable ({e}), moved to {}", aside.display());
+                let _ = std::fs::rename(&path, &aside);
+                vec![]
+            }),
+        };
         Store { path, list }
     });
     f(store)

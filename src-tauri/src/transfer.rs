@@ -18,6 +18,8 @@ const SALT: usize = 16;
 const NONCE: usize = 24;
 const PASSWORD_MIN: usize = 8;
 const VERSION: u32 = 1;
+/// A file of a few hundred accounts is well under this; a bigger one is not read at all.
+const FILE_MAX: u64 = 8 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 struct Payload {
@@ -94,7 +96,12 @@ pub async fn transfer_export(app: AppHandle, password: String) -> Result<Option<
     let Some(path) = path else { return Ok(None) };
     // Argon2 takes a moment and memory: off the async runtime.
     let sealed = tauri::async_runtime::spawn_blocking(move || seal(&password, &plain)).await.map_err(|e| e.to_string())??;
-    std::fs::write(&path, sealed).map_err(|e| tr!("não consegui salvar o arquivo: {e}", "couldn't save the file: {e}"))?;
+    // Written beside and renamed over: a failed write never leaves an older file half overwritten.
+    let tmp = path.with_extension("quackblox.tmp");
+    std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        tr!("não consegui salvar o arquivo: {e}", "couldn't save the file: {e}")
+    })?;
     Ok(Some(path.display().to_string()))
 }
 
@@ -122,18 +129,34 @@ pub async fn transfer_import(app: AppHandle, password: String) -> Result<Option<
     .map_err(|e| e.to_string())?
     .and_then(|p| p.into_path().ok());
     let Some(path) = path else { return Ok(None) };
-    let file = std::fs::read(&path).map_err(|e| tr!("não consegui ler o arquivo: {e}", "couldn't read the file: {e}"))?;
+    let read_error = |e: std::io::Error| tr!("não consegui ler o arquivo: {e}", "couldn't read the file: {e}");
+    if std::fs::metadata(&path).map_err(read_error)?.len() > FILE_MAX {
+        return Err(tr!("esse não é um arquivo de contas do Quackblox", "that isn't a Quackblox accounts file"));
+    }
+    let file = std::fs::read(&path).map_err(read_error)?;
     let plain = tauri::async_runtime::spawn_blocking(move || open(&password, &file)).await.map_err(|e| e.to_string())??;
     let payload: Payload = serde_json::from_slice(&plain).map_err(|_| tr!("o arquivo está estragado", "the file is damaged"))?;
     if payload.version > VERSION {
         return Err(tr!("esse arquivo é de um Quackblox mais novo: atualiza este antes", "that file is from a newer Quackblox: update this one first"));
     }
+    // Every account checked before any is saved: a file with one bad account changes nothing.
+    if payload.accounts.iter().any(|a| a["id"].as_u64().is_none() || a["login"].as_str().is_none_or(str::is_empty)) {
+        return Err(tr!("o arquivo tem uma conta incompleta: nada foi importado", "the file has an incomplete account: nothing was imported"));
+    }
     let mut out = Imported::default();
     for a in &payload.accounts {
-        if crate::accounts::import_one(&app, a)? {
-            out.added += 1;
-        } else {
-            out.updated += 1;
+        match crate::accounts::import_one(&app, a) {
+            Ok(true) => out.added += 1,
+            Ok(false) => out.updated += 1,
+            // A disk or DPAPI failure midway: the window still hears about the ones saved.
+            Err(e) => {
+                let _ = app.emit("accounts-changed", ());
+                return Err(tr!(
+                    "{e} ({} conta(s) importadas antes do erro; abre o arquivo de novo pra terminar)",
+                    "{e} ({} account(s) imported before the error; open the file again to finish)",
+                    out.added + out.updated
+                ));
+            }
         }
     }
     (out.groups, out.profiles, out.favorites, out.slots) = crate::organize::merge(&app, payload.lists)?;

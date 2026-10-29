@@ -936,7 +936,7 @@ pub fn start(app: &AppHandle) {
                     // on a drop's dialog (the watch has that one).
                     if let Some(&hours) = restart.get(&c.account) {
                         let age = now.saturating_sub(started);
-                        if hours > 0 && c.state == State::InGame && !c.restarting && !c.game.is_empty() && age >= hours as u64 * 3600 {
+                        if hours > 0 && c.state == State::InGame && !c.restarting && !c.game.is_empty() && age >= hours as u64 * hour_secs() {
                             c.restarting = true;
                             to_restart.push((c.account.clone(), c.name.clone(), c.game.clone(), "hours"));
                         }
@@ -1192,6 +1192,16 @@ pub fn grid(app: &AppHandle) -> Result<usize, String> {
         let _ = unsafe { SetWindowPos(win, Some(HWND_TOP), x - l, y - t, 0, 0, SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_NOSIZE) };
     }
     Ok(n)
+}
+
+/// An hour, for the restarts. QUACKBLOX_HOUR_SECS shortens it for tests, Dev builds only.
+fn hour_secs() -> u64 {
+    if cfg!(debug_assertions) {
+        if let Some(s) = std::env::var("QUACKBLOX_HOUR_SECS").ok().and_then(|s| s.parse().ok()) {
+            return s;
+        }
+    }
+    3600
 }
 
 /// Puts a client's window in its account's place. Roblox sets its own size a moment after the
