@@ -990,6 +990,21 @@ pub fn start(app: &AppHandle) {
                     }
                 }
             }
+            // The tray player a closed client leaves is ended now, not only at the next Play: he
+            // saw the other clients lose mouse and keyboard now and then after closing one by X
+            // (30/10/26, not reproduced here), and that player is what the close leaves running.
+            // Off this thread, which it would hold up to 3 s; looked for again a moment later in
+            // case it starts after its client ended.
+            if !exited.is_empty() {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let clients = app.state::<Clients>();
+                    let mut ended = clients.end_tray_players();
+                    std::thread::sleep(Duration::from_secs(5));
+                    ended += clients.end_tray_players();
+                    eprintln!("clients: tray players ended after a client closed: {ended}");
+                });
+            }
             if !sound.is_empty() && muted_at.elapsed() >= MUTE_EVERY {
                 muted_at = Instant::now();
                 crate::audio::apply(&sound);
