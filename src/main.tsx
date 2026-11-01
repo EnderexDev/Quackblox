@@ -6,6 +6,7 @@ import App from "./App";
 import { Setup } from "./components/Setup";
 import { startUpdateChecks } from "./update";
 import { setLang } from "./i18n";
+import { IS_DEV } from "./components/Logo";
 import type { Settings } from "./api";
 import "./styles/index.css";
 
@@ -14,6 +15,9 @@ window.addEventListener("contextmenu", (e) => {
   const el = e.target as HTMLElement | null;
   if (!el?.closest("input, textarea")) e.preventDefault();
 });
+
+// Quackblox Dev's colours are green (tokens.css).
+if (IS_DEV) document.documentElement.classList.add("dev");
 
 /** Quackblox-Setup.exe opens this page in its "setup" window (setup.rs), in place of the app. */
 const isSetup = getCurrentWindow().label === "setup";

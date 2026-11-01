@@ -4,7 +4,8 @@
 // none), and closes when the installer opens the new Quackblox.
 import { useEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { CloseIcon, DuckIcon, FolderIcon } from "./icons";
+import { CloseIcon, FolderIcon } from "./icons";
+import { Logo } from "./Logo";
 import { Toggle } from "./Toggle";
 import { useT } from "../i18n";
 
@@ -147,8 +148,8 @@ export function Setup() {
       </header>
 
       <main className="setup-body">
-        <div className={`setup-duck ${busy ? "busy" : ""} ${stage.kind === "done" ? "done" : ""}`}>
-          <DuckIcon size={busy ? 52 : 76} />
+        <div className={`setup-logo ${busy ? "busy" : ""} ${stage.kind === "done" ? "done" : ""}`}>
+          <Logo size={busy ? 52 : 76} />
         </div>
         <h1>{title}</h1>
         <p className={`setup-line ${failed ? "error" : "muted"}`}>{line}</p>

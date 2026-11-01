@@ -715,7 +715,13 @@
   color: #2a0606;
 }
 
-/* ---- Brand: the mascot and what it is doing ---- */
+/* ---- Brand: the logo, the name and what the clients are doing ---- */
+
+.logo {
+  flex: none;
+  border-radius: 11px;
+  user-select: none;
+}
 
 .brand-text {
   display: flex;
@@ -728,6 +734,14 @@
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0;
+}
+
+.brand-mood.panic {
+  color: var(--danger);
+}
+
+.brand-mood.cheering {
+  color: var(--green);
 }
 
 /* ---- Open clients: the bar over the cards and the line on each card ---- */

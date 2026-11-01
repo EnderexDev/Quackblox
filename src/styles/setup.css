@@ -54,7 +54,7 @@
 }
 
 /* The duck: still while it waits, inside the splash's turning ring while it works, a hop when done. */
-.setup-duck {
+.setup-logo {
   position: relative;
   display: grid;
   place-items: center;
@@ -65,7 +65,7 @@
   filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.35));
 }
 
-.setup-duck.busy::before {
+.setup-logo.busy::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -76,7 +76,7 @@
   animation: spin 1.2s linear infinite;
 }
 
-.setup-duck.done {
+.setup-logo.done {
   animation: setup-hop 600ms var(--ease-spring);
 }
 
@@ -193,7 +193,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .setup-body,
-  .setup-duck.done {
+  .setup-logo.done {
     animation: none;
   }
 }

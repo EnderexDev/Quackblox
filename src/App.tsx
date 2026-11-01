@@ -50,7 +50,7 @@ import {
 } from "./components/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { Toggle } from "./components/Toggle";
-import { Mascot, type Mood } from "./components/Mascot";
+import { APP_NAME, Logo } from "./components/Logo";
 import { checkForUpdate, installUpdate, useUpdate } from "./update";
 import { notify, toast, Toasts } from "./toast";
 import { getLang, setLang, t as texts, useT, type Lang, type Texts } from "./i18n";
@@ -77,9 +77,11 @@ const RESTART_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
 const labelOf = (a: Account) => a.nickname || a.displayName;
 /** The phone page and Discord's presence (phase 5): off until he turns them on. */
 type ExtrasSettings = Pick<Settings, "phone" | "richPresence">;
+/** What the bar under the app's name says: no Roblox open, some open, all in a game, one dropped. */
+type Mood = "sleeping" | "playing" | "cheering" | "panic";
 const extrasOf = (s: Settings): ExtrasSettings => ({ phone: s.phone, richPresence: s.richPresence });
 const NO_EXTRAS: ExtrasSettings = { phone: false, richPresence: false };
-/** How long the duck panics after a drop, and cheers once every client is in. */
+/** How long the bar says a client dropped, and that every client is in. */
 const PANIC_MS = 8000;
 const CHEER_MS = 4000;
 
@@ -153,7 +155,7 @@ export default function App() {
   const [vigia, setVigia] = useState<VigiaSettings>(NO_VIGIA);
   const [extras, setExtras] = useState<ExtrasSettings>(NO_EXTRAS);
   const [screens, setScreens] = useState(false);
-  /** The name of the account that just dropped, while the duck panics. */
+  /** The name of the account that just dropped, while the bar says so. */
   const [alarm, setAlarm] = useState<string | null>(null);
   const [cheer, setCheer] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -613,7 +615,7 @@ export default function App() {
 
   const playable = (appUser ? 1 : 0) + accounts.filter((a) => !a.expired && a.id !== appUser?.id).length;
 
-  // The duck cheers once every client open is inside a game (from one that was not), and panics
+  // The bar cheers once every client open is inside a game (from one that was not), and panics
   // after a drop or while a client sits on Roblox's error dialog.
   const inGame = clients.clients.filter((c) => c.state === "inGame").length;
   // "Todas": two or more. One account joining alone is no cheer, nor the first of a "Jogar com todas".
@@ -692,9 +694,9 @@ export default function App() {
       <div className="app">
         <header className="topbar">
           <div className="brand">
-            <Mascot key={mood} mood={mood} size={50} />
+            <Logo size={46} />
             <div className="brand-text">
-              <span className="brand-name">Quackblox</span>
+              <span className="brand-name">{APP_NAME}</span>
               <span className={`brand-mood ${mood}`}>{moodText}</span>
             </div>
           </div>
@@ -940,7 +942,7 @@ function UpdateLink() {
   }, []);
   return (
     <span className="muted small" title={t.trayTitle}>
-      Quackblox {version} ·{" "}
+      {APP_NAME} {version} ·{" "}
       {u.kind === "available" || u.kind === "starting" ? (
         <button className="update-link available" disabled={u.kind === "starting"} onClick={installUpdate}>
           {u.kind === "starting" ? t.updateStarting : t.updateTo(u.version)}

@@ -74,3 +74,15 @@
   --aura-opacity: 0.35;
   --shadow-popup: 0 20px 50px rgba(0, 0, 0, 0.18);
 }
+
+/* Quackblox Dev is green where Quackblox is gold, like its icon (main.tsx sets .dev). */
+:root.dev {
+  --accent: #5ee36a;
+  --accent-2: #2fbf4a;
+  --on-accent: #04210a;
+}
+
+:root.dev[data-theme="light"] {
+  --accent: #2fb84a;
+  --accent-2: #1f9a3a;
+}
