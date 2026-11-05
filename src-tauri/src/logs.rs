@@ -64,6 +64,25 @@ pub fn of(user_id: Option<u64>, created: u64, next: Option<u64>) -> Option<PathB
     best.map(|(_, p)| p)
 }
 
+/// The player logs Roblox wrote to in the last `within`, with the UTC start in their names. A
+/// running client writes to its log every 250 ms, even idle in the tray (measured 05/11/26).
+pub fn recent(within: std::time::Duration) -> Vec<(PathBuf, u64)> {
+    let Some(entries) = dir().and_then(|d| std::fs::read_dir(d).ok()) else { return vec![] };
+    let now = std::time::SystemTime::now();
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.contains("CrashHandler") {
+                return None;
+            }
+            let start = started(&name)?;
+            let written = entry.metadata().ok()?.modified().ok()?;
+            (now.duration_since(written).unwrap_or_default() <= within).then(|| (entry.path(), start))
+        })
+        .collect()
+}
+
 fn read(path: &PathBuf) -> String {
     // A few hundred KB each (760 KB the largest, 28/10/26), read once per client that ends.
     std::fs::read(path).map(|b| String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())).unwrap_or_default()
@@ -140,6 +159,13 @@ impl Tail {
         self.feed(&String::from_utf8_lossy(&bytes[..end]));
     }
 
+    /// The server cut it off because its account joined somewhere else: another client or device
+    /// (264), another server (273), the same server again (276). That session is over for good:
+    /// its dialog's Reconnect would knock out the new one.
+    pub fn taken_elsewhere(&self) -> bool {
+        self.lost && self.reason.is_some_and(|r| matches!(r, 264 | 273 | 276))
+    }
+
     fn feed(&mut self, text: &str) {
         static PLACE: OnceLock<Regex> = OnceLock::new();
         let place = PLACE.get_or_init(|| Regex::new(r"game_join_loadtime: placeid:(\d+)").unwrap());
@@ -189,6 +215,25 @@ mod tests {
 x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
 ";
         assert_eq!(reason_of(teleported), None);
+    }
+
+    #[test]
+    fn tells_a_session_taken_elsewhere() {
+        let join = "x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a\n";
+        let lost = "x Warning [FLog::Network] Lost connection with reason : Same account launched experience from different device.\n";
+        let tail = |text: &str| {
+            let mut t = Tail::new(PathBuf::new());
+            t.feed(text);
+            t
+        };
+        assert!(tail(&format!("{join}{lost}x Sending disconnect with reason: 273\n")).taken_elsewhere());
+        assert!(tail(&format!("{join}{lost}x Sending disconnect with reason: 264\n")).taken_elsewhere());
+        // A plain drop, him leaving, and a reason with no lost connection (a teleport) are not.
+        assert!(!tail(&format!("{join}{lost}x Sending disconnect with reason: 277\n")).taken_elsewhere());
+        assert!(!tail(&format!("{join}x Sending disconnect with reason: 285\n")).taken_elsewhere());
+        assert!(!tail(&format!("{join}x Sending disconnect with reason: 273\n")).taken_elsewhere());
+        // Joined again after it: that server is the one that counts.
+        assert!(!tail(&format!("{join}{lost}x Sending disconnect with reason: 273\n{join}")).taken_elsewhere());
     }
 
     #[test]

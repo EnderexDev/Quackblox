@@ -184,6 +184,18 @@ pub struct Clients {
     last_games: Mutex<std::collections::HashMap<String, String>>,
     /// A look for tray players beside an open game is running (it waits up to 3 s on each).
     sweeping: std::sync::atomic::AtomicBool,
+    /// The logs being read of Roblox clients Quackblox did not open, by path.
+    strays: Mutex<HashMap<PathBuf, Stray>>,
+}
+
+/// A recent Roblox log, read as it grows, for the client of no account that writes it.
+struct Stray {
+    tail: crate::logs::Tail,
+    /// The UTC start in its name, as Unix seconds.
+    start: u64,
+    /// It already said its account joined elsewhere: acted on once, or seen in what was there
+    /// when it was first read.
+    done: bool,
 }
 
 /// What the window sees of a client.
@@ -825,6 +837,7 @@ pub fn start(app: &AppHandle) {
         starts: Mutex::new(starts),
         last_games: Mutex::new(std::collections::HashMap::new()),
         sweeping: std::sync::atomic::AtomicBool::new(false),
+        strays: Mutex::new(HashMap::new()),
     };
     clients.save(&clients.list.lock().unwrap());
     app.manage(clients);
@@ -919,6 +932,13 @@ pub fn start(app: &AppHandle) {
                             if let (Some(u), Some(place)) = (c.user, tail.joined) {
                                 in_game.push((u, place));
                             }
+                        }
+                        // The same account joined somewhere else: this client only shows an error
+                        // dialog from now on, so it is closed (he asked, 05/11/26). Marked as
+                        // Quackblox's end: no drop is told and no rejoin starts.
+                        if tail.taken_elsewhere() && !c.killed && unsafe { TerminateProcess(h, 0) }.is_ok() {
+                            c.killed = true;
+                            eprintln!("clients: {} closed, its account joined elsewhere", c.pid);
                         }
                     }
                     if c.state == State::InGame && was != State::InGame {
@@ -1086,9 +1106,53 @@ pub fn start(app: &AppHandle) {
                     let _ = app.emit("client-exited", e);
                 });
             }
+            close_strays_taken(&clients);
             let _ = app.emit("clients", clients.snapshot(others(&clients)));
         }
     });
+}
+
+/// Closes a Roblox client Quackblox did not open (the site's Play, the way he opens most) once
+/// its log says its account joined somewhere else, as Quackblox's own clients are. The log has
+/// no pid: its client is the one player on screen that started up to 10 s before the log did
+/// (logs::of), and with two such players nothing is closed. Only what a log says after it was
+/// first read counts: an old drop in a log is not acted on, and neither is a dead client's that
+/// started beside a live one (the site starts a client and a tray player together).
+fn close_strays_taken(clients: &Clients) {
+    let ours: HashSet<u32> = clients.list.lock().unwrap().iter().map(|c| c.pid).collect();
+    let shown: Vec<u32> = player_pids().into_iter().filter(|p| !ours.contains(p) && window_of(*p).is_some()).collect();
+    let mut strays = clients.strays.lock().unwrap();
+    if shown.is_empty() {
+        strays.clear();
+        return;
+    }
+    let logs = crate::logs::recent(Duration::from_secs(120));
+    strays.retain(|path, _| logs.iter().any(|(p, _)| p == path));
+    for (path, start) in logs {
+        let first = !strays.contains_key(&path);
+        let s = strays.entry(path.clone()).or_insert_with(|| Stray { tail: crate::logs::Tail::new(path), start, done: false });
+        s.tail.read();
+        if first || s.done {
+            s.done = s.tail.taken_elsewhere();
+            continue;
+        }
+        if !s.tail.taken_elsewhere() {
+            continue;
+        }
+        s.done = true;
+        let started = |pid: u32| {
+            let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok().map(Proc)?;
+            times(h.0).map(|(created, _)| unix(created))
+        };
+        let near: Vec<u32> = player_pids().into_iter().filter(|&p| started(p).is_some_and(|c| c + 10 >= s.start && c <= s.start + 1)).collect();
+        match near.as_slice() {
+            [pid] if shown.contains(pid) => {
+                let ended = unsafe { OpenProcess(PROCESS_TERMINATE, false, *pid) }.ok().map(Proc).is_some_and(|h| unsafe { TerminateProcess(h.0, 0) }.is_ok());
+                eprintln!("clients: Roblox {pid} (not Quackblox's) closed, its account joined elsewhere: {ended}");
+            }
+            _ => eprintln!("clients: a Roblox log says its account joined elsewhere, but its client is not certain ({near:?})"),
+        }
+    }
 }
 
 /// Roblox player windows open that Quackblox did not open.
