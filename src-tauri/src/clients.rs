@@ -20,6 +20,7 @@ use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAtt
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, GetExitCodeProcess, GetPriorityClass, GetProcessId, GetProcessTimes, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
@@ -50,6 +51,8 @@ const LOG_LIMIT: u64 = 60;
 const RAM_HOLD: Duration = Duration::from_secs(60);
 /// How often the mute is set again on the clients (a client shows in the mixer only once it plays a sound).
 const MUTE_EVERY: Duration = Duration::from_secs(2);
+/// How often a Roblox window on screen has the players idle in the tray beside it looked for.
+const TRAY_SWEEP: Duration = Duration::from_secs(5);
 /// 1601-01-01 to 1970-01-01 in FILETIME's 100 ns units.
 const UNIX_TO_FILETIME: u64 = 116_444_736_000_000_000;
 
@@ -179,6 +182,8 @@ pub struct Clients {
     /// The game each account's last client was opened in, kept after it ends (a reopen from the
     /// phone after a crash).
     last_games: Mutex<std::collections::HashMap<String, String>>,
+    /// A look for tray players beside an open game is running (it waits up to 3 s on each).
+    sweeping: std::sync::atomic::AtomicBool,
 }
 
 /// What the window sees of a client.
@@ -358,6 +363,12 @@ fn window_of(pid: u32) -> Option<HWND> {
 /// Every Roblox player process running, opened by Quackblox or not.
 fn player_pids() -> Vec<u32> {
     player_procs().into_iter().map(|(pid, _)| pid).collect()
+}
+
+/// The Windows session a process runs in (a second session's player has no window here).
+fn session_of(pid: u32) -> Option<u32> {
+    let mut id = 0;
+    unsafe { ProcessIdToSessionId(pid, &mut id) }.ok().map(|_| id)
 }
 
 /// Every Roblox player process running, with its parent's pid.
@@ -549,16 +560,21 @@ impl Clients {
     /// with 0xC0000409 and hands the game to it (a fresh tray process opens it as a window of no
     /// account) or loses it (one 20 min old did, 5 launches in a row, the site's way too). Only a
     /// player with no window and of no account counts: one started by a client seen ending,
-    /// before it ended, or one over 30 s old whose parent is gone. A client the site just opened
-    /// has no window yet either, but its parent (the browser) is still running. Waits until each
-    /// one has ended, up to 3 s: the new client must not find it. Says how many it ended.
+    /// before it ended, or one over 30 s old whose parent is gone or is another player. A client
+    /// the site just opened has no window yet either, but its parent (the browser) is still
+    /// running. A player in another Windows session (the auto-click one) shows no window here
+    /// and is left alone. Waits until each one has ended, up to 3 s: the new client must not
+    /// find it. Says how many it ended.
     pub fn end_tray_players(&self) -> usize {
         let ours: HashSet<u32> = self.list.lock().unwrap().iter().map(|c| c.pid).collect();
         let gone = self.gone.lock().unwrap().clone();
         let now = now_filetime();
+        let session = session_of(std::process::id());
+        let procs = player_procs();
+        let players: HashSet<u32> = procs.iter().map(|&(pid, _)| pid).collect();
         let mut ended = 0;
-        for (pid, parent) in player_procs() {
-            if ours.contains(&pid) || window_of(pid).is_some() {
+        for (pid, parent) in procs {
+            if ours.contains(&pid) || window_of(pid).is_some() || session.is_none() || session_of(pid) != session {
                 continue;
             }
             let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
@@ -569,7 +585,10 @@ impl Clients {
             // its client ended, and the next launch went into it as a window of no account). A
             // client of Quackblox's starts no other player, so a windowless child of one is it.
             let left_by_client = gone.iter().any(|&(p, at)| p == parent && created <= at) || ours.contains(&parent);
-            let orphan = now.saturating_sub(created) > 30 * 10_000_000 && !running(parent);
+            // Measured 05/11/26: Roblox opens a standby player in the tray next to the client a
+            // link starts (both from the same launcher, gone a moment later) and another when a
+            // client closes. One of them is left idle beside the game played in the other.
+            let orphan = now.saturating_sub(created) > 30 * 10_000_000 && (!running(parent) || players.contains(&parent));
             if (left_by_client || orphan) && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
                 let _ = unsafe { WaitForSingleObject(proc.0, 3000) };
                 ended += 1;
@@ -805,6 +824,7 @@ pub fn start(app: &AppHandle) {
         gone: Mutex::new(vec![]),
         starts: Mutex::new(starts),
         last_games: Mutex::new(std::collections::HashMap::new()),
+        sweeping: std::sync::atomic::AtomicBool::new(false),
     };
     clients.save(&clients.list.lock().unwrap());
     app.manage(clients);
@@ -814,6 +834,7 @@ pub fn start(app: &AppHandle) {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
         crate::audio::init_thread();
         let mut muted_at = Instant::now() - MUTE_EVERY;
+        let mut swept_at = Instant::now();
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let clients = app.state::<Clients>();
@@ -1004,6 +1025,26 @@ pub fn start(app: &AppHandle) {
                     ended += clients.end_tray_players();
                     eprintln!("clients: tray players ended after a client closed: {ended}");
                 });
+            }
+            // A player idle in the tray beside a game on screen is ended too: a tool reading the
+            // newest Roblox log (his Quack Presence, 05/11/26) reads the idle one's half the time
+            // and loses the game, and the next link may go into it. Only while some Roblox window
+            // shows, so with no game open Roblox keeps its tray.
+            if swept_at.elapsed() >= TRAY_SWEEP {
+                swept_at = Instant::now();
+                let pids = player_pids();
+                let shown = pids.iter().filter(|&&p| window_of(p).is_some()).count();
+                if shown > 0 && shown < pids.len() && !clients.sweeping.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let clients = app.state::<Clients>();
+                        let ended = clients.end_tray_players();
+                        clients.sweeping.store(false, std::sync::atomic::Ordering::Relaxed);
+                        if ended > 0 {
+                            eprintln!("clients: tray players ended beside an open game: {ended}");
+                        }
+                    });
+                }
             }
             if !sound.is_empty() && muted_at.elapsed() >= MUTE_EVERY {
                 muted_at = Instant::now();
