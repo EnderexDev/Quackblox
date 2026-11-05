@@ -22,6 +22,8 @@ pub fn init(app: &AppHandle) {
 
 /// Writes one line: local time, the app's version, then `what`.
 pub fn note(what: &str) {
+    // A name with a line break would start a false line.
+    let what = what.replace(['\r', '\n'], " ");
     eprintln!("ends: {what}");
     let Some(path) = PATH.get() else { return };
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
@@ -52,12 +54,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         super::PATH.set(path.clone()).unwrap();
         super::note("pid 1: um");
-        super::note("pid 2: dois");
+        super::note("pid 2: dois\r\nfalsa");
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].ends_with(&format!("  v{}  pid 1: um", env!("CARGO_PKG_VERSION"))), "{}", lines[0]);
         assert!(lines[1].starts_with("20") && lines[1].as_bytes()[4] == b'-', "{}", lines[1]);
+        assert!(lines[1].ends_with("pid 2: dois  falsa"), "{}", lines[1]);
     }
 }

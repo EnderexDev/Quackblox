@@ -544,17 +544,21 @@ impl Clients {
         // Ended and marked under the lock: the watcher never sees it end unmarked, and a
         // terminate that failed leaves it unmarked, so its later drop or crash is still told.
         // The wait goes on a handle of its own: the watcher closes the client's once it ends.
-        let own = {
+        // The log line is written after the lock goes: the watcher waits on it.
+        let (own, name) = {
             let mut list = self.list.lock().unwrap();
             let Some(c) = list.iter_mut().find(|c| c.pid == pid) else { return false };
+            let name = c.name.clone();
             if unsafe { TerminateProcess(c.proc.0, 0) }.is_err() {
-                crate::ends::note(&format!("pid {pid} ({}): não fechou ({why})", c.name));
+                drop(list);
+                let state = if running(pid) { "ainda rodando" } else { "já tinha saído sozinho" };
+                crate::ends::note(&format!("pid {pid} ({name}): não consegui fechar, {state} ({why})"));
                 return false;
             }
             c.killed = true;
-            crate::ends::note(&format!("pid {pid} ({}): {why}", c.name));
-            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }.ok().map(Proc)
+            (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }.ok().map(Proc), name)
         };
+        crate::ends::note(&format!("pid {pid} ({name}): {why}"));
         // A wait that ran out has no end time yet: the time now stands in for it.
         let ended = own.as_ref().filter(|p| unsafe { WaitForSingleObject(p.0, 3000) } == WAIT_OBJECT_0).and_then(|p| exit_time(p.0));
         self.gone.lock().unwrap().push((pid, ended.unwrap_or_else(now_filetime)));
@@ -604,8 +608,9 @@ impl Clients {
             // client closes. One of them is left idle beside the game played in the other.
             let orphan = now.saturating_sub(created) > 30 * 10_000_000 && (!running(parent) || players.contains(&parent));
             if (left_by_client || orphan) && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
-                let _ = unsafe { WaitForSingleObject(proc.0, 3000) };
+                let gone = unsafe { WaitForSingleObject(proc.0, 3000) } == WAIT_OBJECT_0;
                 ended += 1;
+                let late = if gone { "" } else { ", ainda não tinha saído depois de 3 s" };
                 let rule = if left_by_client { "deixado por um cliente que fechou" } else { "órfão" };
                 let age = now.saturating_sub(created) / 10_000_000;
                 let parent_is = if players.contains(&parent) {
@@ -616,7 +621,7 @@ impl Clients {
                     "fechado"
                 };
                 crate::ends::note(&format!(
-                    "pid {pid}: Roblox sem janela na bandeja, {rule} ({when}); aberto há {age} s, pai {parent} {parent_is}, {} Roblox rodando",
+                    "pid {pid}: Roblox sem janela na bandeja, {rule} ({when}); aberto há {age} s, pai {parent} {parent_is}, {} Roblox rodando{late}",
                     players.len()
                 ));
             }
@@ -882,6 +887,8 @@ pub fn start(app: &AppHandle) {
             let mut fell = vec![];
             let mut joined = vec![];
             let mut in_game = vec![];
+            // Lines for ends.log, written once the list's lock is gone.
+            let mut notes: Vec<String> = vec![];
             // A later client of the same user, open or ended: its log is not this one's.
             let starts = clients.starts.lock().unwrap().clone();
             let next_start = |user: Option<u64>, started: u64| user.and_then(|u| starts.iter().filter(|&&(su, at)| su == u && at > started).map(|&(_, at)| at).min());
@@ -953,7 +960,7 @@ pub fn start(app: &AppHandle) {
                         // Quackblox's end: no drop is told and no rejoin starts.
                         if tail.taken_elsewhere() && !c.killed && unsafe { TerminateProcess(h, 0) }.is_ok() {
                             c.killed = true;
-                            crate::ends::note(&format!("pid {} ({}): a conta entrou em outro lugar", c.pid, c.name));
+                            notes.push(format!("pid {} ({}): a conta entrou em outro lugar", c.pid, c.name));
                         }
                     }
                     if c.state == State::InGame && was != State::InGame {
@@ -1098,6 +1105,9 @@ pub fn start(app: &AppHandle) {
             for (account, name, game, why) in to_restart {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move { crate::launch::restart(&app, account, name, game, why).await });
+            }
+            for n in notes {
+                crate::ends::note(&n);
             }
             crate::stats::add(&app, &in_game);
             for (account, user) in joined {
