@@ -540,7 +540,7 @@ impl Clients {
     /// for it. Its end is marked as Quackblox's, and the tray player it may leave counts as one
     /// for the next launch to end.
     /// Blocks up to 3 s: call it off the async runtime.
-    pub fn end(&self, pid: u32) -> bool {
+    pub fn end(&self, pid: u32, why: &str) -> bool {
         // Ended and marked under the lock: the watcher never sees it end unmarked, and a
         // terminate that failed leaves it unmarked, so its later drop or crash is still told.
         // The wait goes on a handle of its own: the watcher closes the client's once it ends.
@@ -548,9 +548,11 @@ impl Clients {
             let mut list = self.list.lock().unwrap();
             let Some(c) = list.iter_mut().find(|c| c.pid == pid) else { return false };
             if unsafe { TerminateProcess(c.proc.0, 0) }.is_err() {
+                crate::ends::note(&format!("pid {pid} ({}): não fechou ({why})", c.name));
                 return false;
             }
             c.killed = true;
+            crate::ends::note(&format!("pid {pid} ({}): {why}", c.name));
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }.ok().map(Proc)
         };
         // A wait that ran out has no end time yet: the time now stands in for it.
@@ -577,7 +579,7 @@ impl Clients {
     /// running. A player in another Windows session (the auto-click one) shows no window here
     /// and is left alone. Waits until each one has ended, up to 3 s: the new client must not
     /// find it. Says how many it ended.
-    pub fn end_tray_players(&self) -> usize {
+    pub fn end_tray_players(&self, when: &str) -> usize {
         let ours: HashSet<u32> = self.list.lock().unwrap().iter().map(|c| c.pid).collect();
         let gone = self.gone.lock().unwrap().clone();
         let now = now_filetime();
@@ -604,6 +606,19 @@ impl Clients {
             if (left_by_client || orphan) && unsafe { TerminateProcess(proc.0, 0) }.is_ok() {
                 let _ = unsafe { WaitForSingleObject(proc.0, 3000) };
                 ended += 1;
+                let rule = if left_by_client { "deixado por um cliente que fechou" } else { "órfão" };
+                let age = now.saturating_sub(created) / 10_000_000;
+                let parent_is = if players.contains(&parent) {
+                    "outro Roblox"
+                } else if running(parent) {
+                    "vivo"
+                } else {
+                    "fechado"
+                };
+                crate::ends::note(&format!(
+                    "pid {pid}: Roblox sem janela na bandeja, {rule} ({when}); aberto há {age} s, pai {parent} {parent_is}, {} Roblox rodando",
+                    players.len()
+                ));
             }
         }
         ended
@@ -699,9 +714,9 @@ impl Clients {
 
     /// Ends the clients of each account given. Says how many clients it ended and how many are
     /// still running. Blocks up to 3 s a client: call it off the async runtime.
-    pub fn end_accounts(&self, accounts: &[String]) -> (usize, usize) {
+    pub fn end_accounts(&self, accounts: &[String], why: &str) -> (usize, usize) {
         let before = self.list.lock().unwrap().iter().filter(|c| accounts.contains(&c.account)).count();
-        let left: usize = accounts.iter().map(|a| self.end_account(a)).sum();
+        let left: usize = accounts.iter().map(|a| self.end_account(a, why)).sum();
         (before.saturating_sub(left), left)
     }
 
@@ -746,11 +761,11 @@ impl Clients {
     /// Ends every client of the account, each marked as ended by Quackblox (no drop told, no
     /// rejoin: one still waiting to start is called off). Says how many are still running after.
     /// Blocks up to 3 s a client: call it off the async runtime.
-    pub fn end_account(&self, account: &str) -> usize {
+    pub fn end_account(&self, account: &str, why: &str) -> usize {
         crate::vigia::cancel(account);
         let pids: Vec<u32> = self.list.lock().unwrap().iter().filter(|c| c.account == account).map(|c| c.pid).collect();
         for &pid in &pids {
-            self.end(pid);
+            self.end(pid, why);
         }
         pids.into_iter().filter(|&p| running(p) && self.pids().contains(&p)).count()
     }
@@ -938,7 +953,7 @@ pub fn start(app: &AppHandle) {
                         // Quackblox's end: no drop is told and no rejoin starts.
                         if tail.taken_elsewhere() && !c.killed && unsafe { TerminateProcess(h, 0) }.is_ok() {
                             c.killed = true;
-                            eprintln!("clients: {} closed, its account joined elsewhere", c.pid);
+                            crate::ends::note(&format!("pid {} ({}): a conta entrou em outro lugar", c.pid, c.name));
                         }
                     }
                     if c.state == State::InGame && was != State::InGame {
@@ -1040,9 +1055,9 @@ pub fn start(app: &AppHandle) {
                 let app = app.clone();
                 std::thread::spawn(move || {
                     let clients = app.state::<Clients>();
-                    let mut ended = clients.end_tray_players();
+                    let mut ended = clients.end_tray_players("depois de um cliente fechar");
                     std::thread::sleep(Duration::from_secs(5));
-                    ended += clients.end_tray_players();
+                    ended += clients.end_tray_players("depois de um cliente fechar");
                     eprintln!("clients: tray players ended after a client closed: {ended}");
                 });
             }
@@ -1058,7 +1073,7 @@ pub fn start(app: &AppHandle) {
                     let app = app.clone();
                     std::thread::spawn(move || {
                         let clients = app.state::<Clients>();
-                        let ended = clients.end_tray_players();
+                        let ended = clients.end_tray_players("ao lado de um jogo aberto");
                         clients.sweeping.store(false, std::sync::atomic::Ordering::Relaxed);
                         if ended > 0 {
                             eprintln!("clients: tray players ended beside an open game: {ended}");
@@ -1148,7 +1163,7 @@ fn close_strays_taken(clients: &Clients) {
         match near.as_slice() {
             [pid] if shown.contains(pid) => {
                 let ended = unsafe { OpenProcess(PROCESS_TERMINATE, false, *pid) }.ok().map(Proc).is_some_and(|h| unsafe { TerminateProcess(h.0, 0) }.is_ok());
-                eprintln!("clients: Roblox {pid} (not Quackblox's) closed, its account joined elsewhere: {ended}");
+                crate::ends::note(&format!("pid {pid} (aberto fora do Quackblox): a conta entrou em outro lugar, fechou: {ended}"));
             }
             _ => eprintln!("clients: a Roblox log says its account joined elsewhere, but its client is not certain ({near:?})"),
         }
@@ -1417,7 +1432,7 @@ pub fn clients_set_restart(clients: tauri::State<Clients>, account: String, hour
 /// many clients it closed.
 #[tauri::command]
 pub async fn clients_close(app: AppHandle, accounts: Vec<String>) -> Result<usize, String> {
-    let (closed, left) = tauri::async_runtime::spawn_blocking(move || app.state::<Clients>().end_accounts(&accounts)).await.map_err(|e| e.to_string())?;
+    let (closed, left) = tauri::async_runtime::spawn_blocking(move || app.state::<Clients>().end_accounts(&accounts, "fechado por ti no Quackblox")).await.map_err(|e| e.to_string())?;
     if left > 0 {
         return Err(tr!("{closed} fechado(s), mas {left} Roblox não fechou", "{closed} closed, but {left} Roblox didn't close"));
     }

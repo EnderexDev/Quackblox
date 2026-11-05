@@ -267,7 +267,7 @@ async fn scheduled(app: AppHandle, slot: Slot, profile: Profile) {
     if slot.action == "close" {
         let handle = app.clone();
         let accounts = profile.accounts.clone();
-        let closed = tauri::async_runtime::spawn_blocking(move || handle.state::<crate::clients::Clients>().end_accounts(&accounts).0).await.unwrap_or(0);
+        let closed = tauri::async_runtime::spawn_blocking(move || handle.state::<crate::clients::Clients>().end_accounts(&accounts, "agenda do perfil").0).await.unwrap_or(0);
         crate::vigia::alert(&app, &tr!("Agenda: perfil {name} fechado ({closed} Roblox).", "Schedule: profile {name} closed ({closed} Roblox)."));
         return;
     }

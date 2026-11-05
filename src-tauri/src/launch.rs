@@ -293,7 +293,7 @@ pub async fn reopen(app: &AppHandle, account: &str, game: &str, game_name: &str)
     }
     let handle = app.clone();
     let key = account.to_string();
-    let left = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end_account(&key)).await.unwrap_or(1);
+    let left = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end_account(&key, "fechado pra reabrir (botão, celular, reinício por horas ou por RAM)")).await.unwrap_or(1);
     if left > 0 {
         return Err(tr!("o Roblox não fechou, não abri outro", "Roblox didn't close, didn't open another"));
     }

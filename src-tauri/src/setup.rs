@@ -67,6 +67,11 @@ pub fn run(mut context: tauri::Context<tauri::Wry>, mode: Mode) {
     if unsafe { windows::Win32::Foundation::GetLastError() } == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
         return;
     }
+    // Before anything slower: the app that started this window closes as soon as it hears this
+    // one is waiting for the lock its Roblox clients need (multi.rs).
+    if let Mode::Update { .. } = mode {
+        crate::multi::bridge();
+    }
     context.config_mut().app.windows.clear();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -314,12 +319,14 @@ fn desktop_shortcut() -> Option<PathBuf> {
     }
 }
 
-/// Opens the Quackblox installed in `dir` and closes this window.
+/// Opens the Quackblox installed in `dir` and closes this window, once that Quackblox waits
+/// for the lock this window may hold (an update that failed).
 #[tauri::command]
-fn setup_launch(app: AppHandle, dir: String) -> Result<(), String> {
+async fn setup_launch(app: AppHandle, dir: String) -> Result<(), String> {
     Command::new(Path::new(&dir).join(BINARY))
         .spawn()
         .map_err(|e| tr!("não consegui abrir o Quackblox: {e}", "couldn't open Quackblox: {e}"))?;
+    let _ = tauri::async_runtime::spawn_blocking(crate::multi::hand_over).await;
     app.exit(0);
     Ok(())
 }
@@ -376,7 +383,10 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
     let _ = progress.send(Progress::Installing);
     let result = tauri::async_runtime::spawn_blocking(move || {
         let installer = std::env::temp_dir().join(format!("Quackblox-Update-{}.exe", uuid::Uuid::new_v4()));
-        install_from(&installer, &bytes, &["/UPDATE", "/R"], &dir)
+        install_from(&installer, &bytes, &["/UPDATE", "/R"], &dir)?;
+        // NSIS opened the new Quackblox: this window leaves once it waits for the lock.
+        crate::multi::hand_over();
+        Ok::<(), String>(())
     })
     .await;
     drop(busy);
@@ -385,9 +395,11 @@ async fn setup_update(app: AppHandle, progress: Channel<Progress>) -> Result<(),
     Ok(())
 }
 
-/// From the app: hands the update to a copy of this exe in the temp folder and quits.
+/// From the app: hands the update to a copy of this exe in the temp folder and quits, once the
+/// copy waits for the multi's lock (the Roblox clients close when it is left free, multi.rs).
 #[tauri::command]
-pub fn update_in_window(app: AppHandle) -> Result<(), String> {
+pub async fn update_in_window(app: AppHandle) -> Result<(), String> {
+    let bridge = crate::multi::before_update();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or_else(|| tr!("sem pasta de instalação", "no install folder"))?.to_path_buf();
     // A name nobody can guess ahead, held from the check until the copy has started
@@ -400,6 +412,9 @@ pub fn update_in_window(app: AppHandle) -> Result<(), String> {
     if let Err(e) = started {
         let _ = std::fs::remove_file(&copy);
         return Err(tr!("não consegui iniciar a atualização: {e}", "couldn't start the update: {e}"));
+    }
+    if let Some(wait) = bridge {
+        let _ = tauri::async_runtime::spawn_blocking(wait).await;
     }
     crate::desktop::quit(&app);
     Ok(())

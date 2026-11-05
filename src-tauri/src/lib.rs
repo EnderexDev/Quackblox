@@ -16,6 +16,7 @@ mod capture;
 mod clients;
 mod desktop;
 mod discord;
+mod ends;
 mod history;
 mod hotkeys;
 mod launch;
@@ -53,6 +54,8 @@ pub fn run() {
             app.manage(accounts::Store::load(app.handle()));
             // Before the multi, which reads auto_close.
             settings::load(app.handle());
+            // Before anything that can end a Roblox.
+            ends::init(app.handle());
             multi::start(app.handle().clone());
             clients::start(app.handle());
             hotkeys::start(app.handle().clone());

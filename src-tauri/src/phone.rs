@@ -424,7 +424,7 @@ fn handle(app: &AppHandle, mut stream: TcpStream, ip: IpAddr, generation: u64) {
                 },
                 _ => (vec![id.clone()], name_of(app, &id)),
             };
-            let (closed, left) = app.state::<Clients>().end_accounts(&accounts);
+            let (closed, left) = app.state::<Clients>().end_accounts(&accounts, "fechado pela página do celular");
             if left > 0 {
                 return error(&mut stream, "409 Conflict", tr!("{who}: {left} Roblox não fechou", "{who}: {left} Roblox didn't close"));
             }

@@ -253,7 +253,7 @@ async fn open(app: &AppHandle, f: &Fall, pid: &mut Option<u32>, still: &(dyn Fn(
         // Waits up to 3 s for the end: off the async runtime. One that would not end is kept for
         // the next try: a second client beside it would only pile up.
         let handle = app.clone();
-        let ended = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end(p)).await.unwrap_or(false);
+        let ended = tauri::async_runtime::spawn_blocking(move || handle.state::<Clients>().end(p, "caiu, reentrando")).await.unwrap_or(false);
         let still_there = !ended && app.state::<Clients>().pids().contains(&p);
         if still_there {
             return Err(tr!("não consegui fechar o Roblox que caiu", "couldn't close the Roblox that dropped"));
