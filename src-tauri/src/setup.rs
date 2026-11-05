@@ -28,6 +28,8 @@ const BINARY: &str = "quackblox.exe";
 const UPDATE_ARG: &str = "--quackblox-update";
 /// The temp copy that runs an update: this, a random id, ".exe".
 const UPDATER_PREFIX: &str = "Quackblox-Updater-";
+/// The temp copy that keeps the multi's lock with Quackblox closed: this, a random id, ".exe".
+const HOLDER_PREFIX: &str = "Quackblox-Holder-";
 
 pub enum Mode {
     /// Quackblox-Setup.exe: the installer starts this many bytes from the end of the exe.
@@ -96,10 +98,18 @@ pub fn run(mut context: tauri::Context<tauri::Wry>, mode: Mode) {
         })
         // While NSIS runs, Alt+F4 does not close the window: closing would end this process
         // under a running install and leave its temp copy behind.
-        .on_window_event(|_, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if INSTALLING.load(Ordering::SeqCst) {
                     api.prevent_close();
+                } else if crate::multi::holding_for_clients() {
+                    // Alt+F4 after an update that failed: the way of setup_close, off this thread.
+                    api.prevent_close();
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        crate::multi::keep_for_clients();
+                        app.exit(0);
+                    });
                 }
             }
         })
@@ -331,8 +341,11 @@ async fn setup_launch(app: AppHandle, dir: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Closes this window. After an update that failed, the lock it holds for the Roblox clients
+/// goes to the holder first (multi::keep_for_clients).
 #[tauri::command]
-fn setup_close(app: AppHandle) {
+async fn setup_close(app: AppHandle) {
+    let _ = tauri::async_runtime::spawn_blocking(crate::multi::keep_for_clients).await;
     app.exit(0);
 }
 
@@ -420,6 +433,22 @@ pub async fn update_in_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Starts the copy that keeps the multi's lock with Quackblox closed (multi::run_holder). A copy
+/// in the temp folder, like the updater's: an update closes every quackblox.exe and writes over
+/// the install folder, and the holder may still be running then.
+pub fn start_holder() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let copy = std::env::temp_dir().join(format!("{HOLDER_PREFIX}{}.exe", uuid::Uuid::new_v4()));
+    let bytes = std::fs::read(&exe).map_err(|e| e.to_string())?;
+    let held = write_held(&copy, &bytes)?;
+    let started = Command::new(&copy).arg(crate::multi::HOLD_ARG).spawn();
+    drop(held);
+    started.map(|_| ()).map_err(|e| {
+        let _ = std::fs::remove_file(&copy);
+        e.to_string()
+    })
+}
+
 /// The updater copies a past update left in the temp folder (one cannot delete its own file).
 /// Tried at start and again a minute later: NSIS's /R opens this app while the copy that ran it
 /// may still be closing.
@@ -430,7 +459,9 @@ pub fn clean_up() {
             let name = e.file_name().to_string_lossy().into_owned();
             // "Quackblox-Updater.exe": the fixed name 0.2.0 and 0.2.1 used.
             // Also the NSIS copies an install or update killed midway left behind.
-            let ours = [UPDATER_PREFIX, "Quackblox-Install-", "Quackblox-Update-"].iter().any(|p| name.starts_with(p));
+            // A holder still running is in use and stays: the minute's sweep or a later start
+            // gets it.
+            let ours = [UPDATER_PREFIX, HOLDER_PREFIX, "Quackblox-Install-", "Quackblox-Update-"].iter().any(|p| name.starts_with(p));
             if (ours && name.ends_with(".exe")) || name == "Quackblox-Updater.exe" {
                 let _ = std::fs::remove_file(e.path());
             }

@@ -37,6 +37,10 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The copy that keeps the multi's lock with Quackblox closed: no window, no Tauri.
+    if multi::hold_mode() {
+        return multi::run_holder();
+    }
     let context = tauri::generate_context!();
     // Quackblox-Setup.exe or the update window: the installer instead of the app.
     if let Some(mode) = setup::mode() {

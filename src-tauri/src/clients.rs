@@ -377,6 +377,14 @@ fn player_pids() -> Vec<u32> {
     player_procs().into_iter().map(|(pid, _)| pid).collect()
 }
 
+/// Roblox players with a window in this Windows session, opened by Quackblox or not: the ones
+/// that close when the multi's lock is left free (multi.rs). The tray's windowless players and
+/// the auto-click session's are not counted.
+pub fn windowed_players() -> usize {
+    let session = session_of(std::process::id());
+    player_pids().into_iter().filter(|&p| session.is_some() && session_of(p) == session && window_of(p).is_some()).count()
+}
+
 /// The Windows session a process runs in (a second session's player has no window here).
 fn session_of(pid: u32) -> Option<u32> {
     let mut id = 0;

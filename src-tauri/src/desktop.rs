@@ -100,7 +100,15 @@ pub fn setup(app: &App) -> tauri::Result<()> {
                 // The window's switch follows, even while it is on screen.
                 let _ = app.emit("startup", now);
             }
-            "quit" => self::quit(app),
+            // The Roblox windows open stay open: the lock goes to the holder first (multi.rs),
+            // off this thread, which the wait would freeze.
+            "quit" => {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    crate::multi::keep_for_clients();
+                    self::quit(&app);
+                });
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

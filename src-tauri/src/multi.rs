@@ -15,6 +15,17 @@ use windows::core::{PCWSTR, w};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// The lock Roblox looks for. A Dev build takes another name from QUACKBLOX_LOCK, to test the
+/// handovers while the installed Quackblox holds the real one.
+fn lock_name() -> PCWSTR {
+    static NAME: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    let name = NAME.get_or_init(|| {
+        let test = std::env::var("QUACKBLOX_LOCK").ok().filter(|_| cfg!(debug_assertions));
+        test.unwrap_or_else(|| "ROBLOX_singletonMutex".into()).encode_utf16().chain([0]).collect()
+    });
+    PCWSTR(name.as_ptr())
+}
+
 /// True while Quackblox owns the lock.
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
@@ -31,7 +42,7 @@ pub fn start(app: AppHandle) {
         let mut futile = 0;
         let mut open_errors = 0;
         loop {
-            let handle = unsafe { CreateMutexW(None, true, w!("ROBLOX_singletonMutex")) };
+            let handle = unsafe { CreateMutexW(None, true, lock_name()) };
             // The lock could not even be opened: nothing says a Roblox holds it, so nothing is closed.
             if handle.is_err() {
                 // Counted apart from the closing passes, so a passing error never turns the
@@ -193,7 +204,7 @@ pub fn bridge() {
     std::thread::spawn(move || {
         // The whole Event moves here, not only its handle.
         let waiting = waiting;
-        let Ok(lock) = (unsafe { CreateMutexW(None, false, w!("ROBLOX_singletonMutex")) }) else { return };
+        let Ok(lock) = (unsafe { CreateMutexW(None, false, lock_name()) }) else { return };
         let _ = unsafe { SetEvent(waiting.0) };
         let r = unsafe { WaitForSingleObject(lock, INFINITE) };
         if r != WAIT_OBJECT_0 && r != WAIT_ABANDONED {
@@ -202,8 +213,10 @@ pub fn bridge() {
         // The new app looks for `holding` to know whose lock it is, and signals `app_waiting`
         // once it waits for it: opened by NSIS after the update, or by hand after one that
         // failed, with this window still open.
-        let holding = Event::new(UPDATER_HOLDING);
+        // `app_waiting` first: a new app that sees `holding` signals at once and drops its
+        // handle, and an event nobody else held then would be gone before this one opens it.
         let app_waiting = Event::new(APP_WAITING);
+        let holding = Event::new(UPDATER_HOLDING);
         BRIDGING.store(true, Ordering::SeqCst);
         let Some(app_waiting) = app_waiting else {
             // No way to hear the new app: the lock goes when this window closes.
@@ -229,6 +242,69 @@ pub fn hand_over() {
     let start = std::time::Instant::now();
     while BRIDGING.load(Ordering::SeqCst) && !HANDED.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// True in the update window while it holds the lock nobody took yet.
+pub fn holding_for_clients() -> bool {
+    BRIDGING.load(Ordering::SeqCst) && !HANDED.load(Ordering::SeqCst)
+}
+
+// The lock with Quackblox closed. Quitting it (tray, or the window of an update that failed)
+// would free the lock and every Roblox open would close (see above). With a Roblox window open,
+// a copy of the exe with HOLD_ARG takes the lock down the same chain as an update and keeps it
+// with no window, until the last Roblox window closes or Quackblox opens again and takes it back.
+pub const HOLD_ARG: &str = "--quackblox-hold";
+/// No Roblox window this long, and the holder leaves: a client a link just started has its
+/// window by then.
+const HOLD_EMPTY: Duration = Duration::from_secs(10);
+
+/// This start of the exe is the holder.
+pub fn hold_mode() -> bool {
+    std::env::args().any(|a| a == HOLD_ARG)
+}
+
+/// The holder's whole life: takes the lock from the one quitting, and leaves once it handed it
+/// to a Quackblox or no Roblox window is left (then the lock goes free with nobody to close).
+pub fn run_holder() {
+    bridge();
+    let start = std::time::Instant::now();
+    let mut empty_since: Option<std::time::Instant> = None;
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if HANDED.load(Ordering::SeqCst) {
+            return;
+        }
+        // Never got it: the one quitting did not hold it, or another took it first.
+        if !BRIDGING.load(Ordering::SeqCst) {
+            if start.elapsed() > Duration::from_secs(30) {
+                return;
+            }
+            continue;
+        }
+        if crate::clients::windowed_players() > 0 {
+            empty_since = None;
+        } else if empty_since.get_or_insert_with(std::time::Instant::now).elapsed() >= HOLD_EMPTY {
+            return;
+        }
+    }
+}
+
+/// Before Quackblox or a failed update's window quits: while it holds the lock and a Roblox
+/// window is open, starts the holder and waits (up to 10 s) until it waits for the lock. Blocks:
+/// call it off the async runtime and the main thread.
+pub fn keep_for_clients() {
+    if !(active() || holding_for_clients()) || crate::clients::windowed_players() == 0 {
+        return;
+    }
+    let Some(waiting) = Event::new(UPDATER_WAITING) else { return };
+    let _ = unsafe { ResetEvent(waiting.0) };
+    if let Err(e) = crate::setup::start_holder() {
+        eprintln!("multi: no holder: {e}");
+        return;
+    }
+    if waiting.wait(10_000) {
+        std::thread::sleep(HANDOVER_GAP);
     }
 }
 
