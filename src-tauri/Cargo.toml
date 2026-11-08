@@ -7,7 +7,10 @@ edition = "2024"
 
 [lib]
 name = "quackblox_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Only the rlib: staticlib and cdylib exist for Tauri's mobile targets, and the desktop exe
+# links the rlib. Each extra type was built (and LTO'd in release) again for nothing:
+# Quackify's release build went from 304 s to 247 s, same exe (measured 08/11/26).
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -72,6 +75,16 @@ windows = { version = "0.61", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Dev builds (cargo build, tauri dev, cargo test): line numbers only for this crate, so panics
+# and backtraces still name file:line, and no debug info for dependencies. Writing and linking
+# full debug info was half of every rebuild: Quackify's one-line rebuild went from 16.9 s to
+# 8.8 s and its clean build from 87 s to 59 s (measured 08/11/26). Release is untouched.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 codegen-units = 1
