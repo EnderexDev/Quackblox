@@ -1,7 +1,10 @@
 // Publishes a Quackblox version that the installed apps update to by themselves (src/update.ts),
 // adapted from Quackify's release.mjs:
 //
-//   npm run release -- 0.2.0 "What changed, one line or more"
+//   npm run release -- 0.2.0
+//
+// The notes are CHANGELOG.md's [Unreleased], which becomes this version (changelog.mjs): with
+// nothing there the release stops before the build.
 //
 // From a clean checkout up to date with master: puts the version in package.json, Cargo.toml
 // and tauri.conf.json, builds the installer signed with the key in ~/.tauri/quackblox.key
@@ -15,12 +18,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bundle, packSetup } from "./build-setup.mjs";
+import { releaseNotes, stampRelease } from "./changelog.mjs";
 
 const REPO = "EnderexDev/Quackblox";
 const BRANCH = "master";
 const root = join(import.meta.dirname, "..");
-const [version, ...noteWords] = process.argv.slice(2);
-const notes = noteWords.join(" ").trim();
+const [version, ...extra] = process.argv.slice(2);
 
 const fail = (why) => {
   console.error(`release: ${why}`);
@@ -30,7 +33,8 @@ const fail = (why) => {
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { cwd: root, stdio: "inherit", shell: cmd === "npm" || cmd === "npx", ...opts });
 const read = (cmd, args) => execFileSync(cmd, args, { cwd: root, encoding: "utf8" }).trim();
 
-if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) fail('usage: npm run release -- 0.2.0 "notes"');
+if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) fail("usage: npm run release -- 0.2.0 (the notes come from CHANGELOG.md's [Unreleased])");
+if (extra.length) fail("the notes come from CHANGELOG.md now: write them under \"## [Unreleased]\", commit, and run npm run release -- <version> alone");
 // The public master has to be the code the installer is built from: the push at the end only
 // goes through as a fast-forward, and checking it here saves a build that could not be published.
 run("git", ["fetch", "origin", BRANCH]);
@@ -56,12 +60,24 @@ edit("package.json", (s) => s.replace(/"version": "[^"]+"/, `"version": "${versi
 edit("src-tauri/tauri.conf.json", (s) => s.replace(/"version": "[^"]+"/, `"version": "${version}"`));
 edit("src-tauri/Cargo.toml", (s) => s.replace(/^version = "[^"]+"/m, `version = "${version}"`));
 
-const VERSION_FILES = ["package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock"];
+const VERSION_FILES = ["CHANGELOG.md", "package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock"];
 /** Puts the old version back, so the next try does not stop at "the tree has changes". */
 const undo = (why) => {
   run("git", ["checkout", "--", ...VERSION_FILES]);
   fail(`${why}; the version files are back as they were`);
 };
+
+// The notes: CHANGELOG.md's [Unreleased] becomes this version. A second try finds the version
+// already stamped and uses it.
+let notes;
+try {
+  const before = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+  const after = stampRelease(before, version, new Date().toISOString().slice(0, 10), REPO);
+  writeFileSync(join(root, "CHANGELOG.md"), after);
+  notes = releaseNotes(after, version).trim();
+} catch (err) {
+  undo(err.message);
+}
 
 try {
   run("npx", ["tauri", "build", "--bundles", "nsis"], {
