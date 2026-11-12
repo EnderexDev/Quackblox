@@ -9,6 +9,7 @@ line under [Unreleased], and `npm run release` turns that section into the versi
 
 ### Changed
 - Quackblox started with Windows (straight to the tray) no longer keeps drawing its hidden window: about a quarter of a CPU core and 80 MB less until the window is first opened.
+- The watch over the Roblox windows looks at the windows on screen instead of listing every process twice a second: Quackblox idle in the background goes from about 0.04 to under 0.01 of a CPU core.
 
 ## [0.8.9] - 2026-11-12
 

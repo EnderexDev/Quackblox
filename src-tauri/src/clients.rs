@@ -24,8 +24,8 @@ use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, GetExitCodeProcess, GetPriorityClass, GetProcessId, GetProcessTimes, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
-    ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, TerminateProcess, WaitForSingleObject,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
+    ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass, SetProcessInformation, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
@@ -370,6 +370,54 @@ fn window_of(pid: u32) -> Option<HWND> {
     let mut find = Find { pid, best: None, area: 0 };
     let _ = unsafe { EnumWindows(Some(each), LPARAM(&mut find as *mut Find as isize)) };
     find.best
+}
+
+/// Every Roblox player with a window on screen, opened by Quackblox or not, with its main window
+/// (as window_of picks it), from one EnumWindows. The process list (player_procs) took about 50 ms
+/// a call and the watch asked it two or three times a second: 0.04 of a core with nothing
+/// happening (12/11/26). Whether a pid is a player is asked of Windows once and remembered while
+/// that pid has a window.
+fn shown_players() -> HashMap<u32, HWND> {
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let found = unsafe { &mut *(lparam.0 as *mut HashMap<u32, (HWND, i64)>) };
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() || unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok_and(|o| !o.is_invalid()) {
+            return true.into();
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        let mut r = RECT::default();
+        let _ = unsafe { GetWindowRect(hwnd, &mut r) };
+        let area = (r.right - r.left) as i64 * (r.bottom - r.top) as i64;
+        let best = found.entry(pid).or_insert((hwnd, area));
+        if area > best.1 {
+            *best = (hwnd, area);
+        }
+        true.into()
+    }
+    static IS_PLAYER: Mutex<Option<HashMap<u32, bool>>> = Mutex::new(None);
+    let mut found: HashMap<u32, (HWND, i64)> = HashMap::new();
+    let _ = unsafe { EnumWindows(Some(each), LPARAM(&mut found as *mut _ as isize)) };
+    let mut known = IS_PLAYER.lock().unwrap_or_else(|e| e.into_inner());
+    let known = known.get_or_insert_with(HashMap::new);
+    // A pid with no window left is forgotten, so a pid Windows reuses is asked again.
+    known.retain(|pid, _| found.contains_key(pid));
+    found
+        .into_iter()
+        .filter(|(pid, _)| *known.entry(*pid).or_insert_with(|| exe_is_player(*pid)))
+        .map(|(pid, (hwnd, _))| (pid, hwnd))
+        .collect()
+}
+
+fn exe_is_player(pid: u32) -> bool {
+    let Ok(h) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { return false };
+    let h = Proc(h);
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    if unsafe { QueryFullProcessImageNameW(h.0, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.is_err() {
+        return false;
+    }
+    let path = String::from_utf16_lossy(&buf[..len as usize]);
+    path.rsplit('\\').next().is_some_and(|name| name.eq_ignore_ascii_case(PLAYER_EXE))
 }
 
 /// Every Roblox player process running, opened by Quackblox or not.
@@ -1080,11 +1128,13 @@ pub fn start(app: &AppHandle) {
             // newest Roblox log (his Quack Presence, 05/11/26) reads the idle one's half the time
             // and loses the game, and the next link may go into it. Only while some Roblox window
             // shows, so with no game open Roblox keeps its tray.
-            if swept_at.elapsed() >= TRAY_SWEEP {
+            // One look at the windows for the sweep, the strays and the count of others; the
+            // process list only for the sweep, and only with a game on screen.
+            let shown = shown_players();
+            if swept_at.elapsed() >= TRAY_SWEEP && !shown.is_empty() {
                 swept_at = Instant::now();
-                let pids = player_pids();
-                let shown = pids.iter().filter(|&&p| window_of(p).is_some()).count();
-                if shown > 0 && shown < pids.len() && !clients.sweeping.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let players = player_pids().len();
+                if shown.len() < players && !clients.sweeping.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     let app = app.clone();
                     std::thread::spawn(move || {
                         let clients = app.state::<Clients>();
@@ -1139,8 +1189,8 @@ pub fn start(app: &AppHandle) {
                     let _ = app.emit("client-exited", e);
                 });
             }
-            close_strays_taken(&clients);
-            let _ = app.emit("clients", clients.snapshot(others(&clients)));
+            close_strays_taken(&clients, &shown);
+            let _ = app.emit("clients", clients.snapshot(others_in(&clients, &shown)));
         }
     });
 }
@@ -1151,9 +1201,9 @@ pub fn start(app: &AppHandle) {
 /// (logs::of), and with two such players nothing is closed. Only what a log says after it was
 /// first read counts: an old drop in a log is not acted on, and neither is a dead client's that
 /// started beside a live one (the site starts a client and a tray player together).
-fn close_strays_taken(clients: &Clients) {
+fn close_strays_taken(clients: &Clients, players: &HashMap<u32, HWND>) {
     let ours: HashSet<u32> = clients.list.lock().unwrap().iter().map(|c| c.pid).collect();
-    let shown: Vec<u32> = player_pids().into_iter().filter(|p| !ours.contains(p) && window_of(*p).is_some()).collect();
+    let shown: Vec<u32> = players.keys().copied().filter(|p| !ours.contains(p)).collect();
     let mut strays = clients.strays.lock().unwrap();
     if shown.is_empty() {
         strays.clear();
@@ -1190,8 +1240,13 @@ fn close_strays_taken(clients: &Clients) {
 
 /// Roblox player windows open that Quackblox did not open.
 fn others(clients: &Clients) -> usize {
+    others_in(clients, &shown_players())
+}
+
+/// The same, out of the players already found on screen.
+fn others_in(clients: &Clients, players: &HashMap<u32, HWND>) -> usize {
     let ours: HashSet<u32> = clients.list.lock().unwrap().iter().map(|c| c.pid).collect();
-    player_pids().into_iter().filter(|p| !ours.contains(p) && window_of(*p).is_some()).count()
+    players.keys().filter(|p| !ours.contains(p)).count()
 }
 
 /// Every Roblox player window: Quackblox's own in the order of the account cards, then the rest.
@@ -1473,6 +1528,22 @@ fn frame(win: HWND) -> (i32, i32, i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With Roblox open: the one look at the windows finds the players and windows the process
+    /// list found, and costs less. cargo test shown_players -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn shown_players_match_the_process_list() {
+        let t = Instant::now();
+        let old: HashMap<u32, HWND> = player_pids().into_iter().filter_map(|p| window_of(p).map(|w| (p, w))).collect();
+        let old_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let new = shown_players();
+        let new_ms = t.elapsed().as_secs_f64() * 1000.0;
+        println!("process list: {old_ms:.1} ms, {} players; windows: {new_ms:.1} ms, {} players", old.len(), new.len());
+        assert!(!old.is_empty(), "no Roblox on screen to compare");
+        assert_eq!(old, new);
+    }
 
     fn pid_of(exe: &str) -> Option<u32> {
         let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
