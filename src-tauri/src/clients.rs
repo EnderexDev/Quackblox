@@ -376,7 +376,8 @@ fn window_of(pid: u32) -> Option<HWND> {
 /// (as window_of picks it), from one EnumWindows. The process list (player_procs) took about 50 ms
 /// a call and the watch asked it two or three times a second: 0.04 of a core with nothing
 /// happening (12/11/26). Whether a pid is a player is asked of Windows once and remembered while
-/// that pid has a window.
+/// that pid has a window, with its process handle kept open: Windows never gives a pid to a new
+/// process while a handle to the old one is open, so a remembered answer is always that process's.
 fn shown_players() -> HashMap<u32, HWND> {
     unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let found = unsafe { &mut *(lparam.0 as *mut HashMap<u32, (HWND, i64)>) };
@@ -394,30 +395,37 @@ fn shown_players() -> HashMap<u32, HWND> {
         }
         true.into()
     }
-    static IS_PLAYER: Mutex<Option<HashMap<u32, bool>>> = Mutex::new(None);
+    static IS_PLAYER: Mutex<Option<HashMap<u32, (Proc, bool)>>> = Mutex::new(None);
     let mut found: HashMap<u32, (HWND, i64)> = HashMap::new();
     let _ = unsafe { EnumWindows(Some(each), LPARAM(&mut found as *mut _ as isize)) };
     let mut known = IS_PLAYER.lock().unwrap_or_else(|e| e.into_inner());
     let known = known.get_or_insert_with(HashMap::new);
-    // A pid with no window left is forgotten, so a pid Windows reuses is asked again.
+    // A pid with no window left is forgotten and its handle closed. A dead process has no window,
+    // so its pid leaves here before Windows can give it to another.
     known.retain(|pid, _| found.contains_key(pid));
     found
         .into_iter()
-        .filter(|(pid, _)| *known.entry(*pid).or_insert_with(|| exe_is_player(*pid)))
+        .filter(|(pid, _)| match known.get(pid) {
+            Some((_, player)) => *player,
+            // A process that cannot be opened is not remembered: asked again next time.
+            None => exe_is_player(*pid).is_some_and(|(h, player)| {
+                known.insert(*pid, (h, player));
+                player
+            }),
+        })
         .map(|(pid, (hwnd, _))| (pid, hwnd))
         .collect()
 }
 
-fn exe_is_player(pid: u32) -> bool {
-    let Ok(h) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { return false };
-    let h = Proc(h);
+/// Whether the process is a Roblox player, with its handle kept open so the pid stays its own.
+fn exe_is_player(pid: u32) -> Option<(Proc, bool)> {
+    let h = Proc(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?);
     let mut buf = [0u16; 1024];
     let mut len = buf.len() as u32;
-    if unsafe { QueryFullProcessImageNameW(h.0, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.is_err() {
-        return false;
-    }
+    unsafe { QueryFullProcessImageNameW(h.0, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.ok()?;
     let path = String::from_utf16_lossy(&buf[..len as usize]);
-    path.rsplit('\\').next().is_some_and(|name| name.eq_ignore_ascii_case(PLAYER_EXE))
+    let player = path.rsplit('\\').next().is_some_and(|name| name.eq_ignore_ascii_case(PLAYER_EXE));
+    Some((h, player))
 }
 
 /// Every Roblox player process running, opened by Quackblox or not.
@@ -1543,6 +1551,11 @@ mod tests {
         println!("process list: {old_ms:.1} ms, {} players; windows: {new_ms:.1} ms, {} players", old.len(), new.len());
         assert!(!old.is_empty(), "no Roblox on screen to compare");
         assert_eq!(old, new);
+        // Again from what was remembered, as every tick after the first.
+        let t = Instant::now();
+        let again = shown_players();
+        println!("remembered: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(old, again);
     }
 
     fn pid_of(exe: &str) -> Option<u32> {
