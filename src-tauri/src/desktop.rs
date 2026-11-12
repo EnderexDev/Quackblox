@@ -4,7 +4,7 @@ use auto_launch::{AutoLaunch, AutoLaunchBuilder, WindowsEnableMode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{App, AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
 
 /// Passed by the Windows startup entry: start in the tray, without the window.
 pub const MINIMIZED_ARG: &str = "--minimized";
@@ -71,10 +71,25 @@ pub fn quit(app: &AppHandle) {
 
 pub fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
+        show(&w);
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// Shows the window and its WebView2. A window hidden only by Windows leaves WebView2 thinking the
+/// page is on screen, drawing its frames (Quack Presence, 0.6 of a core measured 12/11/26).
+fn show(window: &WebviewWindow) {
+    let webview: &tauri::Webview = window.as_ref();
+    let _ = webview.show();
+    let _ = window.show();
+}
+
+/// Hides the window and tells WebView2 (SetIsVisible false), which then stops drawing.
+fn hide(window: &WebviewWindow) {
+    let _ = window.hide();
+    let webview: &tauri::Webview = window.as_ref();
+    let _ = webview.hide();
 }
 
 pub fn setup(app: &App) -> tauri::Result<()> {
@@ -118,6 +133,10 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         })
         .build(app)?;
 
+    // The window is born hidden (tauri.conf.json), but its WebView2 is born visible.
+    if let Some(w) = app.get_webview_window("main") {
+        hide(&w);
+    }
     if !std::env::args().any(|a| a == MINIMIZED_ARG) {
         show_window(app.handle());
     }
@@ -135,7 +154,9 @@ pub fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     if let WindowEvent::CloseRequested { api, .. } = event {
         if !QUITTING.load(Ordering::Relaxed) {
             api.prevent_close();
-            let _ = window.hide();
+            if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                hide(&w);
+            }
         }
     }
 }

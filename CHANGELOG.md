@@ -7,6 +7,9 @@ line under [Unreleased], and `npm run release` turns that section into the versi
 
 ## [Unreleased]
 
+### Changed
+- Quackblox started with Windows (straight to the tray) no longer keeps drawing its hidden window: about a quarter of a CPU core and 80 MB less until the window is first opened.
+
 ## [0.8.9] - 2026-11-12
 
 ### Changed
