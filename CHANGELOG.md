@@ -7,6 +7,8 @@ line under [Unreleased], and `npm run release` turns that section into the versi
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-11-12
+
 ### Changed
 - Quackblox uses much less CPU and GPU while its window is open in the background: the colour glow behind the window no longer drifts, the pulsing dots pause while the window has no focus, and the accounts' status is refreshed when the window gets focus back instead of every 20 seconds.
 
@@ -338,7 +340,8 @@ Quackblox stops being a C# tray unlocker and becomes a Tauri app with saved acco
 - **tests:** scripts for the Roblox presence of accounts and for two plays a given gap apart, used to check two different accounts in the same game at once (2 new clients at 3 s and at 10 s).
 - **project:** renamed to Quackblox, with a `build.ps1` for the C# builds before the rewrite, and the Notion structure ids added.
 
-[Unreleased]: https://github.com/EnderexDev/Quackblox/compare/v0.8.8...HEAD
+[Unreleased]: https://github.com/EnderexDev/Quackblox/compare/v0.8.9...HEAD
+[0.8.9]: https://github.com/EnderexDev/Quackblox/compare/v0.8.8...v0.8.9
 [0.8.8]: https://github.com/EnderexDev/Quackblox/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/EnderexDev/Quackblox/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/EnderexDev/Quackblox/compare/v0.8.5...v0.8.6
