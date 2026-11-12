@@ -1,7 +1,8 @@
 # What the app's WebView2 costs while idle: CPU per WebView2 process (by --type=) and the 3D
 # GPU engine use of those processes, over a few seconds. Run it with the window open and
-# without focus. Usage: powershell -File tools\idle-cost.ps1 [-Exe Quackblox] [-Seconds 10]
-param([string]$Exe = "Quackblox", [int]$Seconds = 10)
+# without focus. Usage: powershell -File tools\idle-cost.ps1 [-Exe Quackblox | -Id <pid>] [-Seconds 10]
+# (-Id when the installed app and a Dev build run side by side: both are quackblox.exe.)
+param([string]$Exe = "Quackblox", [int]$Id = 0, [int]$Seconds = 10)
 
 Add-Type @"
 using System; using System.Runtime.InteropServices;
@@ -12,7 +13,7 @@ public static class W {
 }
 "@
 
-$app = Get-Process -Name $Exe -ErrorAction Stop | Select-Object -First 1
+$app = if ($Id) { Get-Process -Id $Id -ErrorAction Stop } else { Get-Process -Name $Exe -ErrorAction Stop | Select-Object -First 1 }
 $all = Get-CimInstance Win32_Process
 # Every process below the app (WebView2's browser process, then its gpu and renderers).
 $tree = @{}; $tree[[uint32]$app.Id] = $true
@@ -38,11 +39,15 @@ $before = @{}; foreach ($id in $ids) { $before[$id] = (Get-Process -Id $id).Tota
 $clock = [Diagnostics.Stopwatch]::StartNew()
 # One sample per second of the 3D engine of every process, summed per pid.
 $gpu = @{}
-$samples = Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -SampleInterval 1 -MaxSamples $Seconds
+# An engine instance of another process can vanish mid-run: Get-Counter then calls the whole set
+# invalid, so the error is dropped and only samples with a valid status count.
+$samples = @(Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -SampleInterval 1 -MaxSamples $Seconds -ErrorAction SilentlyContinue)
 $elapsed = $clock.Elapsed.TotalSeconds
+"GPU samples read: $($samples.Count) of $Seconds"
+if (-not $samples.Count) { $samples = @([pscustomobject]@{ CounterSamples = @() }) }
 foreach ($s in $samples) {
   foreach ($c in $s.CounterSamples) {
-    if ($c.InstanceName -match "^pid_(\d+)_") { $id = [int]$Matches[1]; if ($kind.ContainsKey($id)) { $gpu[$id] = $gpu[$id] + $c.CookedValue } }
+    if ($c.Status -eq 0 -and $c.InstanceName -match "^pid_(\d+)_"){ $id = [int]$Matches[1]; if ($kind.ContainsKey($id)) { $gpu[$id] = $gpu[$id] + $c.CookedValue } }
   }
 }
 $rows = foreach ($id in $ids) {
