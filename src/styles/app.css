@@ -1,4 +1,7 @@
-/* ---- The aura: Quackify's idle violet and amber, drifting behind the glass ---- */
+/* ---- The aura: Quackify's idle violet and amber, still behind the glass ----
+   It used to drift (an 18 s transform loop). Moving a 90 px blur that size made WebView2's GPU
+   process redraw it every frame: about 0.3 of a core and 14% of the GPU with the window idle
+   (measured 12/11/26, tools/idle-cost.ps1). Still, it is drawn once. */
 
 .aura {
   position: fixed;
@@ -14,8 +17,6 @@
   border-radius: 50%;
   filter: blur(90px);
   opacity: var(--aura-opacity);
-  will-change: transform;
-  animation: aura-drift 18s ease-in-out infinite alternate;
 }
 
 .aura-blob.a {
@@ -32,8 +33,6 @@
   right: -12%;
   top: 22%;
   background: hsl(24 55% 40%);
-  animation-duration: 22s;
-  animation-direction: alternate-reverse;
 }
 
 .aura-blob.c {
@@ -43,19 +42,19 @@
   bottom: -18%;
   background: hsl(46 80% 40%);
   opacity: calc(var(--aura-opacity) * 0.6);
-  animation-duration: 14s;
 }
 
-@keyframes aura-drift {
-  to {
-    transform: translate(4%, 3%) scale(1.06);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .aura-blob {
-    animation: none;
-  }
+/* Every endless animation stops while the window has no focus or is minimized (body.idle, set
+   in main.tsx): each running one makes WebView2 draw every frame. A new endless animation gets
+   its selector here. One-shot ones (rise, page-in) stay out, or a notice shown meanwhile would
+   wait on its first frame. */
+body.idle .multi-pill.wait .dot,
+body.idle .live-line.starting .live-dot,
+body.idle .live-line.down .live-dot,
+body.idle .pill-btn.waiting,
+body.idle .setup-logo.busy::before,
+body.idle .setup-progress.endless i {
+  animation-play-state: paused;
 }
 
 /* ---- Shell ---- */

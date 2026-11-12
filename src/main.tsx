@@ -21,6 +21,17 @@ if (IS_DEV) document.documentElement.classList.add("dev");
 
 /** Quackblox-Setup.exe opens this page in its "setup" window (setup.rs), in place of the app. */
 const isSetup = getCurrentWindow().label === "setup";
+
+// body.idle while the window has no focus (minimizing takes it too): endless animations pause
+// (app.css) and the polls wait (App.tsx). A window covered by another stays "visible" to
+// visibilitychange, so focus is what tells the app nobody is looking at it.
+document.body.classList.toggle("idle", !document.hasFocus());
+getCurrentWindow()
+  .onFocusChanged(({ payload: focused }) => {
+    document.body.classList.toggle("idle", !focused);
+    window.dispatchEvent(new Event(focused ? "app-focus" : "app-blur"));
+  })
+  .catch(() => {});
 // The main window asks for updates; the installer does not.
 if (!isSetup) startUpdateChecks();
 

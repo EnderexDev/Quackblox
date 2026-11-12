@@ -88,8 +88,10 @@ const CHEER_MS = 4000;
 const RECENTS_KEY = "quackblox.recents";
 const GAME_KEY = "quackblox.game";
 const SAME_SERVER_KEY = "quackblox.sameServer";
-/** How often the accounts' presence is asked while the window shows (15 in a row passed, 28/10/26). */
+/** How often the accounts' presence is asked while the window has focus (15 in a row passed, 28/10/26). */
 const PRESENCE_MS = 20000;
+/** The window shows and has focus (body.idle comes from main.tsx); polls that only feed the screen wait otherwise. */
+const looking = () => document.visibilityState === "visible" && !document.body.classList.contains("idle");
 const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const readJson = <T,>(key: string, fallback: T): T => {
@@ -302,20 +304,21 @@ export default function App() {
     api.avatars(ids).then((pairs) => pairs.length && setAvatars((m) => ({ ...m, ...Object.fromEntries(pairs) })));
   }, [accounts, appUser]);
 
-  // Where each account is, asked again while the window shows.
+  // Where each account is, asked again while the window has focus; asked at once when it gets
+  // it back. Only the cards show it, so nothing is lost while nobody looks.
   useEffect(() => {
     const load = () => {
-      if (document.visibilityState !== "visible") return;
+      if (!looking()) return;
       api.presence().then(setPresence).catch(() => {});
       // The Roblox app's login turns into the last account that played: its card follows.
       loadAppAccount();
     };
     load();
     const timer = setInterval(load, PRESENCE_MS);
-    document.addEventListener("visibilitychange", load);
+    window.addEventListener("app-focus", load);
     return () => {
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", load);
+      window.removeEventListener("app-focus", load);
     };
   }, [accounts.length, appUser?.id]);
 
@@ -1990,10 +1993,14 @@ function StatsBlock({ accounts, appUser }: { accounts: Account[]; appUser: User 
   const asked = useRef(new Set<string>());
   const failed = useRef(new Map<string, number>());
   useEffect(() => {
-    const load = () => document.visibilityState === "visible" && api.stats().then(setStats).catch(() => {});
+    const load = () => looking() && api.stats().then(setStats).catch(() => {});
     load();
     const timer = setInterval(load, 60000);
-    return () => clearInterval(timer);
+    window.addEventListener("app-focus", load);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("app-focus", load);
+    };
   }, []);
   // The name of each game shown (the three most played of each account), asked once.
   useEffect(() => {

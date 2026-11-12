@@ -7,6 +7,9 @@ line under [Unreleased], and `npm run release` turns that section into the versi
 
 ## [Unreleased]
 
+### Changed
+- Quackblox uses much less CPU and GPU while its window is open in the background: the colour glow behind the window no longer drifts, the pulsing dots pause while the window has no focus, and the accounts' status is refreshed when the window gets focus back instead of every 20 seconds.
+
 ## [0.8.8] - 2026-11-12
 
 ### Fixed
