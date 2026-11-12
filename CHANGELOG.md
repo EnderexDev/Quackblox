@@ -7,6 +7,9 @@ line under [Unreleased], and `npm run release` turns that section into the versi
 
 ## [Unreleased]
 
+### Fixed
+- The old Roblox closes again when the same account joins somewhere else. Since Roblox 0.746 its log no longer writes the error number for that drop, only the "joined from another device" text, and Quackblox now reads the text.
+
 ## [0.8.7] - 2026-11-05
 
 ### Fixed

@@ -116,9 +116,19 @@ fn reason_re() -> &'static Regex {
 fn reason_of(text: &str) -> Option<u32> {
     // Only after the last join: a teleport joins another server, and a reason written for the
     // one before it is not why the client ended. The first one after it is the cause: what the
-    // client writes later (closing the error dialog) is not.
-    let text = text.rfind("Joining game '").map_or(text, |at| &text[at..]);
-    reason_re().captures(text)?[1].parse().ok()
+    // client writes later (closing the error dialog) is not. Read as Tail reads it, so a log of
+    // 0.746 or later, which writes no number when the account joins elsewhere, still gives 273.
+    let mut tail = Tail::new(PathBuf::new());
+    tail.feed(text);
+    tail.reason
+}
+
+/// The text of a "Lost connection with reason" line says its account joined somewhere else.
+/// Up to 0.745 a number came with it (273, 276, 264); from 0.746 (10/11/26) only this text does:
+/// "Disconnected from game, possibly due to game joined from another device" (measured 12/11/26).
+fn says_taken_elsewhere(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    ["another device", "different device", "same account"].iter().any(|t| line.contains(t))
 }
 
 /// What a running client's log said so far, read a piece at a time as Roblox appends to it.
@@ -134,11 +144,14 @@ pub struct Tail {
     /// measured wrote it (273, 276, 28/10/26) and no close did: a reason without it may be a
     /// teleport on its way to the next server.
     pub lost: bool,
+    /// `reason` is the 273 read from the lost line's text, not a number Roblox wrote: a number
+    /// for the same kind of drop (264, 276) that comes after it takes its place.
+    guessed: bool,
 }
 
 impl Tail {
     pub fn new(path: PathBuf) -> Self {
-        Tail { path, offset: 0, joined: None, reason: None, lost: false }
+        Tail { path, offset: 0, joined: None, reason: None, lost: false, guessed: false }
     }
 
     /// Reads what was appended since the last call. A line Roblox is still writing waits for the
@@ -161,7 +174,8 @@ impl Tail {
 
     /// The server cut it off because its account joined somewhere else: another client or device
     /// (264), another server (273), the same server again (276). That session is over for good:
-    /// its dialog's Reconnect would knock out the new one.
+    /// its dialog's Reconnect would knock out the new one. From 0.746 the log has no number for
+    /// it and the 273 comes from the lost line's text (says_taken_elsewhere).
     pub fn taken_elsewhere(&self) -> bool {
         self.lost && self.reason.is_some_and(|r| matches!(r, 264 | 273 | 276))
     }
@@ -175,13 +189,20 @@ impl Tail {
                 self.joined = None;
                 self.reason = None;
                 self.lost = false;
+                self.guessed = false;
             } else if let Some(c) = place.captures(line) {
                 self.joined = c[1].parse().ok();
             } else if line.contains("Lost connection with reason") {
                 self.lost = true;
-            } else if self.reason.is_none() {
-                if let Some(c) = reason_re().captures(line) {
-                    self.reason = c[1].parse().ok();
+                if self.reason.is_none() && says_taken_elsewhere(line) {
+                    self.reason = Some(273);
+                    self.guessed = true;
+                }
+            } else if let Some(c) = reason_re().captures(line) {
+                let r = c[1].parse().ok();
+                if self.reason.is_none() || (self.guessed && matches!(r, Some(264 | 273 | 276))) {
+                    self.reason = r;
+                    self.guessed = false;
                 }
             }
         }
@@ -228,8 +249,19 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
         };
         assert!(tail(&format!("{join}{lost}x Sending disconnect with reason: 273\n")).taken_elsewhere());
         assert!(tail(&format!("{join}{lost}x Sending disconnect with reason: 264\n")).taken_elsewhere());
+        // From 0.746 the lost line is all there is (measured 12/11/26): its text gives 273.
+        let lost_new = "2026-11-12T02:17:28.259Z,3785.259033,dd0c,7,Warning [FLog::Network] Lost connection with reason : Disconnected from game, possibly due to game joined from another device\n";
+        let t = tail(&format!("{join}{lost_new}"));
+        assert!(t.taken_elsewhere());
+        assert_eq!(t.reason, Some(273));
+        assert_eq!(reason_of(&format!("{join}{lost_new}")), Some(273));
+        // A number after it says which one; his Leave (285) after it does not change why.
+        assert_eq!(tail(&format!("{join}{lost_new}x Sending disconnect with reason: 276\n")).reason, Some(276));
+        assert_eq!(tail(&format!("{join}{lost_new}x Sending disconnect with reason: 285\n")).reason, Some(273));
         // A plain drop, him leaving, and a reason with no lost connection (a teleport) are not.
-        assert!(!tail(&format!("{join}{lost}x Sending disconnect with reason: 277\n")).taken_elsewhere());
+        let lost_plain = "x Warning [FLog::Network] Lost connection with reason : Lost connection to the game server, please reconnect\n";
+        assert!(!tail(&format!("{join}{lost_plain}x Sending disconnect with reason: 277\n")).taken_elsewhere());
+        assert!(!tail(&format!("{join}{lost_plain}")).taken_elsewhere());
         assert!(!tail(&format!("{join}x Sending disconnect with reason: 285\n")).taken_elsewhere());
         assert!(!tail(&format!("{join}x Sending disconnect with reason: 273\n")).taken_elsewhere());
         // Joined again after it: that server is the one that counts.
@@ -292,5 +324,24 @@ x ! Joining game '5cdd7bda-9174-447f-97f1-e4ef40c6d8c0' place 1 at a
         let mut closed = Tail::new(dir.join("0.745.0.7451137_20261028T191420Z_Player_C5015_last.log"));
         closed.read();
         assert_eq!((closed.joined, closed.reason, closed.lost), (Some(1818), Some(285), false));
+    }
+
+    /// On this PC's real logs (0.747): the client knocked out at 12/11/26 02:17:28Z when the same
+    /// account joined that game again from the site, which wrote no number.
+    #[test]
+    #[ignore]
+    fn reads_a_real_0747_drop() {
+        let dir = dir().unwrap();
+        let mut knocked = Tail::new(dir.join("0.747.0.7471481_20261112T011423Z_Player_D041E_last.log"));
+        knocked.read();
+        while knocked.offset < std::fs::metadata(&knocked.path).unwrap().len() {
+            knocked.read();
+        }
+        assert!(knocked.taken_elsewhere());
+        assert_eq!(reason_in(&knocked.path), Some(273));
+        // The client that took its place: no drop.
+        let mut new = Tail::new(dir.join("0.747.0.7471481_20261112T021724Z_Player_858FE_last.log"));
+        new.read();
+        assert!(!new.taken_elsewhere());
     }
 }
