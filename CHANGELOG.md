@@ -7,6 +7,8 @@ line under [Unreleased], and `npm run release` turns that section into the versi
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-11-12
+
 ### Fixed
 - The old Roblox closes again when the same account joins somewhere else. Since Roblox 0.746 its log no longer writes the error number for that drop, only the "joined from another device" text, and Quackblox now reads the text.
 
@@ -333,7 +335,8 @@ Quackblox stops being a C# tray unlocker and becomes a Tauri app with saved acco
 - **tests:** scripts for the Roblox presence of accounts and for two plays a given gap apart, used to check two different accounts in the same game at once (2 new clients at 3 s and at 10 s).
 - **project:** renamed to Quackblox, with a `build.ps1` for the C# builds before the rewrite, and the Notion structure ids added.
 
-[Unreleased]: https://github.com/EnderexDev/Quackblox/compare/v0.8.7...HEAD
+[Unreleased]: https://github.com/EnderexDev/Quackblox/compare/v0.8.8...HEAD
+[0.8.8]: https://github.com/EnderexDev/Quackblox/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/EnderexDev/Quackblox/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/EnderexDev/Quackblox/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/EnderexDev/Quackblox/compare/v0.8.4...v0.8.5
